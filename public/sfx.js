@@ -44,6 +44,8 @@ export function play(name, volume = 1, minGap = 0) {
     case "death": tone("sawtooth", 260, 90, 0.35, 0.12 * v); burst(0.2, "lowpass", 600, 1, 0.2 * v); break;
     case "trained": [523, 659, 784].forEach((f, i) => tone("triangle", f, 0, 0.18, 0.12 * v, t + i * 0.09)); break;
     case "built": [392, 523, 659, 784].forEach((f, i) => tone("triangle", f, 0, 0.3, 0.13 * v, t + i * 0.11)); break;
+    case "ping": [880, 1175].forEach((f, i) => tone("sine", f, 0, 0.16, 0.14 * v, t + i * 0.1)); break;
+    case "chat": tone("triangle", 990, 880, 0.08, 0.1 * v); break;
     case "alert": [0, 0.25].forEach((d) => tone("sawtooth", 196, 185, 0.22, 0.12 * v, t + d)); break;
     case "collapse": burst(0.9, "lowpass", 300, 0.7, 0.6 * v); tone("sine", 80, 40, 0.8, 0.25 * v); break;
     case "victory": [523, 659, 784, 1047].forEach((f, i) => tone("triangle", f, 0, 0.5, 0.15 * v, t + i * 0.18)); break;

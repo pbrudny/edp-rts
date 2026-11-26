@@ -137,8 +137,10 @@ function astar(s, sx, sy, isGoal, hx, hy, maxNodes = 5000) {
 
 // ------------------------------------------------------------------ world creation
 
-// peaceful = everyone is allied: nobody can attack anyone, vision is shared, the game ends when the human players leave
-export const enemies = (s, a, b) => a >= 0 && b >= 0 && a !== b && !s.peaceful;
+// teams: players on the same team are allies (no attacks, shared vision, they win together).
+// peaceful = everyone is allied: nobody can attack anyone, the game ends when the human players leave
+export const allies = (s, a, b) => a === b || s.peaceful || (a >= 0 && b >= 0 && s.players[a]?.team === s.players[b]?.team);
+export const enemies = (s, a, b) => a >= 0 && b >= 0 && !allies(s, a, b);
 
 export function createGame({ seed = Date.now() % 1e9, players, peaceful = false }) {
   const R = rng(seed);
@@ -146,11 +148,17 @@ export function createGame({ seed = Date.now() % 1e9, players, peaceful = false 
     seed, peaceful: !!peaceful, rand: rng(seed ^ 0x5bd1e995), w: MAP, h: MAP, tick: 0, time: 0, nextId: 1, over: false, winner: null, timeline: [],
     tile: new Uint8Array(MAP * MAP), wood: new Float32Array(MAP * MAP), occ: new Int32Array(MAP * MAP),
     ents: new Map(), events: [], fx: [], treeChanges: [],
-    players: players.map((p, i) => ({ id: i, name: p.name, color: COLORS[i], ai: p.ai ? { diff: p.ai, think: 0, wave: 0 } : null,
+    players: players.map((p, i) => ({ id: i, name: p.name, color: COLORS[i], team: Number.isInteger(p.team) ? p.team : i, ai: p.ai ? { diff: p.ai, think: 0, wave: 0 } : null,
       res: { food: 200, wood: 200, gold: 100 }, alive: true, techs: {},
       stats: { trained: 0, villagers: 0, military: 0, killed: 0, lost: 0, gathered: 0, food: 0, wood: 0, gold: 0, built: 0, techs: 0 } })),
   };
-  const starts = [[12, 12], [67, 67], [67, 12], [12, 67]].slice(0, players.length);
+  // free for all: opposite corners first. With teams, teammates get neighbouring corners
+  const teams = s.players.map((p) => p.team);
+  let starts = [[12, 12], [67, 67], [67, 12], [12, 67]].slice(0, players.length);
+  if (new Set(teams).size < teams.length) {
+    const ring = [[12, 12], [67, 12], [67, 67], [12, 67]], order = s.players.map((p) => p.id).sort((a, b) => teams[a] - teams[b] || a - b);
+    starts = []; order.forEach((pid, n) => (starts[pid] = ring[n]));
+  }
   const nearStart = (x, y, r) => starts.some(([sx, sy]) => Math.hypot(x - sx, y - sy) < r);
   const blob = (cx, cy, r, fn) => { for (let y = cy - r; y <= cy + r; y++) for (let x = cx - r; x <= cx + r; x++) if (inside(s, x, y) && Math.hypot(x - cx, y - cy) <= r * (0.75 + R() * 0.35)) fn(idx(s, x, y), x, y); };
   // lakes
@@ -310,12 +318,12 @@ export function step(s) {
     }
   }
   for (const p of s.players) if (p.alive && ![...s.ents.values()].some((e) => e.owner === p.id && isBuilding(e))) defeat(s, p.id, "no buildings left");
-  const alive = s.players.filter((p) => p.alive);
+  const alive = s.players.filter((p) => p.alive), aliveTeams = new Set(alive.map((p) => p.team));
   if (s.peaceful) { // no winner: over once every human has left or ended the game
     if (!s.players.some((p) => p.alive && !p.ai)) { s.over = true; s.winner = null; sample(s); s.events.push({ type: "game_over", winner: null, minutes: +(s.time / 60).toFixed(1) }); }
-  } else if (alive.length <= 1 && s.players.length > 1) {
-    s.over = true; s.winner = alive[0]?.id ?? null; sample(s);
-    s.events.push({ type: "game_over", winner: alive[0]?.name ?? null, minutes: +(s.time / 60).toFixed(1) });
+  } else if (aliveTeams.size <= 1 && s.players.length > 1) { // one team left standing (its defeated members win too)
+    s.over = true; s.winner = alive[0]?.id ?? null; s.winTeam = alive[0]?.team ?? null; sample(s);
+    s.events.push({ type: "game_over", winner: alive.map((p) => p.name).join(" & ") || null, minutes: +(s.time / 60).toFixed(1) });
   }
 }
 
@@ -326,7 +334,7 @@ function sample(s) {
   s.timeline.push({ t: Math.round(s.time), p: s.players.map((p, i) => [n[i][0], n[i][1], p.stats.food, p.stats.wood, p.stats.gold]) });
 }
 export function gameStats(s) {
-  return { time: Math.round(s.time), winner: s.winner, peaceful: s.peaceful, players: s.players.map((p) => ({ name: p.name, color: p.color, ai: p.ai?.diff ?? null, alive: p.alive, ...p.stats, techs: Object.keys(p.techs) })), timeline: s.timeline };
+  return { time: Math.round(s.time), winner: s.winner, winTeam: s.winTeam ?? null, peaceful: s.peaceful, players: s.players.map((p) => ({ name: p.name, color: p.color, team: p.team, ai: p.ai?.diff ?? null, alive: p.alive, ...p.stats, techs: Object.keys(p.techs) })), timeline: s.timeline };
 }
 
 function defeat(s, pid, reason) {
@@ -633,7 +641,7 @@ function runAI(s, p) {
 
   // military production: counter what the enemies field (s.rand keeps the game replayable)
   const foe = { swordsman: 0, spearman: 0, archer: 0, cavalry: 0 }; let foeN = 0;
-  for (const e of s.ents.values()) if (e.owner >= 0 && e.owner !== p.id && foe[e.kind] !== undefined) { foe[e.kind]++; foeN++; }
+  for (const e of s.ents.values()) if (enemies(s, p.id, e.owner) && foe[e.kind] !== undefined) { foe[e.kind]++; foeN++; }
   const pickUnit = () => {
     if (foeN >= 4 && foe.cavalry / foeN > 0.3) return "spearman";
     if (foeN >= 4 && foe.archer / foeN > 0.4) return "cavalry";
@@ -688,9 +696,10 @@ export function visibility(s, pid) {
         if ((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 <= r * r) { vis[y * s.w + x] = 1; ex[y * s.w + x] = 1; }
   };
   const p = s.players[pid];
-  if (!p || !p.alive || s.over) { vis.fill(1); ex.fill(1); return { vis, ex }; } // defeated players and finished games see everything
+  const teamUp = p && s.players.some((q) => q.alive && allies(s, pid, q.id));
+  if (!p || !teamUp || s.over) { vis.fill(1); ex.fill(1); return { vis, ex }; } // finished games, and defeated players with no team left, see everything
   for (const e of s.ents.values()) {
-    if (e.owner < 0 || (e.owner !== pid && !s.peaceful)) continue; // allies share vision
+    if (e.owner < 0 || !allies(s, pid, e.owner)) continue; // allies share vision
     if (isUnit(e)) reveal(e.x, e.y, KINDS[e.kind].sight);
     else if (isBuilding(e)) reveal(e.x + e.w / 2, e.y + e.h / 2, (BUILD_SIGHT[e.kind] ?? 4) + Math.max(e.w, e.h) / 2);
   }
@@ -724,8 +733,8 @@ export function snapshot(s, pid) {
   return {
     t: "s", tick: s.tick, time: Math.round(s.time), peaceful: s.peaceful,
     me: pid, techs: me ? Object.keys(me.techs) : [], res: me ? { food: Math.floor(me.res.food), wood: Math.floor(me.res.wood), gold: Math.floor(me.res.gold), ...popOf(s, pid) } : null,
-    players: s.players.map((p) => ({ name: p.name, color: p.color, alive: p.alive, ai: p.ai?.diff ?? null })),
-    ents, fx: s.fx.filter((f) => seen(f[0], f[1]) || seen(f[2], f[3])), trees: s.treeChanges, over: s.over, winner: s.winner,
+    players: s.players.map((p) => ({ name: p.name, color: p.color, team: p.team, alive: p.alive, ai: p.ai?.diff ?? null })),
+    ents, fx: s.fx.filter((f) => seen(f[0], f[1]) || seen(f[2], f[3])), trees: s.treeChanges, over: s.over, winner: s.winner, winTeam: s.winTeam ?? null,
     vis: bits(vis), ex: s.tick % 10 === 1 ? bits(ex) : undefined,
   };
 }

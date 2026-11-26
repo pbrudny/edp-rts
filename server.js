@@ -57,13 +57,14 @@ async function loadReplays() {
   }
   replays.sort((a, b) => b.date - a.date);
 }
-const summary = (r) => ({ id: r.id, date: r.date, minutes: r.minutes, winner: r.winner, peaceful: !!r.peaceful, players: r.players, playable: r.sim === SIM_HASH });
+const summary = (r) => ({ id: r.id, date: r.date, minutes: r.minutes, winner: r.winner, winners: r.winners ?? (r.winner ? [r.winner] : []), peaceful: !!r.peaceful, players: r.players, playable: r.sim === SIM_HASH });
 async function saveReplay(room) {
   const s = room.sim;
   if (room.saved || room.replay || !room.slots.some((x) => !x.ai) || s.time < 60) return null; // only real games of 1+ minute
   room.saved = true;
   const r = { v: 1, id: room.id, sim: SIM_HASH, date: Date.now(), seed: s.seed, ticks: s.tick, minutes: +(s.time / 60).toFixed(1),
-    winner: s.winner != null ? s.players[s.winner].name : null, peaceful: s.peaceful, players: s.players.map((p) => ({ name: p.name, color: p.color, ai: p.ai?.diff ?? null })),
+    winner: s.winner != null ? s.players[s.winner].name : null, winners: s.winTeam != null ? s.players.filter((p) => p.team === s.winTeam).map((p) => p.name) : [],
+    peaceful: s.peaceful, players: s.players.map((p) => ({ name: p.name, color: p.color, team: p.team, ai: p.ai?.diff ?? null })),
     cmds: room.rec, stats: gameStats(s) };
   try {
     await writeFile(`${REPLAYS}/${r.id}.json`, JSON.stringify(r));
@@ -89,15 +90,19 @@ const AI_NAMES = ["Ashford", "Brennmark", "Cold Harbour", "Dunmere"];
 function sendLobby(room) {
   if (!room.slots.some((x) => x.ws === room.host)) room.host = room.slots.find((x) => x.ws)?.ws ?? null;
   const host = room.slots.findIndex((x) => x.ws === room.host);
-  room.slots.forEach((slot, i) => slot.ws?.readyState === 1 && slot.ws.send(JSON.stringify({ t: "lobby", code: room.code, host, you: i, slots: room.slots.map((x) => ({ name: x.name, ai: x.ai ?? null })) })));
+  room.slots.forEach((slot, i) => slot.ws?.readyState === 1 && slot.ws.send(JSON.stringify({ t: "lobby", code: room.code, host, you: i, public: !!room.public, slots: room.slots.map((x) => ({ name: x.name, ai: x.ai ?? null, team: x.team })) })));
 }
+const freeTeam = (room) => [0, 1, 2, 3].find((t) => !room.slots.some((x) => x.team === t)) ?? 0; // new players start on a team of their own
+// open public lobbies for the menu list
+const lobbies = () => [...rooms.values()].filter((r) => r.public && !r.sim && r.slots.length < 4 && r.slots.some((x) => x.ws))
+  .map((r) => ({ code: r.code, host: r.slots.find((x) => x.ws === r.host)?.name ?? "?", players: r.slots.map((x) => x.name), since: r.created }));
 const freeAiName = (room) => AI_NAMES.find((n) => !room.slots.some((x) => x.name === n + " AI")) + " AI";
 // every human slot gets a secret token so a reloaded page / dropped connection can take the slot back
 function seat(room, slot) { slot.token = randomUUID(); slot.ws.send(JSON.stringify({ t: "session", code: room.code, token: slot.token })); }
 function sendRoom(room, msg) { const m = JSON.stringify(msg); for (const s of room.slots) if (s.ws?.readyState === 1) s.ws.send(m); }
 
 function startRoom(room, seed) {
-  room.sim = createGame({ seed, peaceful: !!room.peaceful, players: room.slots.map((s) => ({ name: s.name, ai: s.ai })) });
+  room.sim = createGame({ seed, peaceful: !!room.peaceful, players: room.slots.map((s, i) => ({ name: s.name, ai: s.ai, team: s.team ?? i })) });
   room.id = randomUUID().replace(/-/g, "").slice(0, 10);
   room.rec = []; // [tick, player, command]
   const map = JSON.stringify(mapInfo(room.sim));
@@ -141,6 +146,9 @@ function tickRoom(room) {
   if ((room.endAt && Date.now() > room.endAt) || !anyone) closeRoom(room);
 }
 function notice(room, msg) { sendRoom(room, { t: "notice", msg }); }
+// chat and map pings: to everyone, or (team chat, pings) only to the sender's allies
+function teamOf(room, i) { return room.sim ? (room.sim.peaceful ? 0 : room.sim.players[i]?.team) : room.slots[i]?.team; }
+function sendTeam(room, from, msg) { const m = JSON.stringify(msg), t = teamOf(room, from); room.slots.forEach((s, i) => { if (s.ws?.readyState === 1 && teamOf(room, i) === t) s.ws.send(m); }); }
 function closeRoom(room) { clearInterval(room.timer); rooms.delete(room.code); if (room.sim && !room.sim.over) saveReplay(room); }
 
 // ------------------------------------------------------------------ http + ws
@@ -148,6 +156,7 @@ const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; ch
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   if (url.pathname === "/health") return res.end("ok");
+  if (url.pathname === "/api/lobbies") return res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" }).end(JSON.stringify(lobbies()));
   if (url.pathname === "/api/replays") return res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" }).end(JSON.stringify(replays.slice(0, 50)));
   let path = url.pathname === "/" ? "/public/index.html" : url.pathname;
   if (path.startsWith("/shared/")) path = path; else if (!path.startsWith("/public/")) path = "/public" + path;
@@ -168,7 +177,7 @@ const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
 // heartbeat: proxies (Traefik/Cloudflare) close silent WebSockets after ~100 s, which killed idle lobbies
 setInterval(() => { for (const c of wss.clients) { if (c.alive === false) { c.terminate(); continue; } c.alive = false; c.ping(); } }, 25000);
 wss.on("connection", (ws) => {
-  let room = null, pid = -1, last = 0, burst = 0;
+  let room = null, pid = -1, last = 0, burst = 0, lastChat = 0, chatN = 0, lastMark = 0;
   ws.alive = true; ws.on("pong", () => (ws.alive = true));
   const reply = (m) => ws.readyState === 1 && ws.send(JSON.stringify(m));
   ws.on("message", (raw) => {
@@ -177,7 +186,18 @@ wss.on("connection", (ws) => {
     if (m.t === "ping") return;
     if (room) pid = room.slots.findIndex((s) => s.ws === ws); // slots can shift while in the lobby
     if (m.t === "cmd") { if (room?.sim && pid >= 0 && m.c && typeof m.c === "object") room.inbox.push([pid, m.c]); return; }
-    if (room && m.t !== "addAI" && m.t !== "start" && m.t !== "kick" && m.t !== "speed") return;
+    if (m.t === "chat" && room && pid >= 0) { // flood guard: 5 messages per 5 s
+      if (now - lastChat > 5000) { lastChat = now; chatN = 0; } if (++chatN > 5) return reply({ t: "notice", msg: "Slow down a little." });
+      const text = String(m.text ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 140); if (!text) return;
+      const slot = room.slots[pid], msg = { t: "chat", from: slot.name, color: pid, text, team: !!m.team };
+      return m.team ? sendTeam(room, pid, msg) : sendRoom(room, msg);
+    }
+    if (m.t === "mark" && room?.sim && pid >= 0 && !room.sim.over) { // map ping, seen by allies
+      if (now - lastMark < 800) return; lastMark = now;
+      const x = Math.max(0, Math.min(room.sim.w, Number(m.x) || 0)), y = Math.max(0, Math.min(room.sim.h, Number(m.y) || 0));
+      return sendTeam(room, pid, { t: "mark", x, y, from: room.slots[pid].name, color: pid });
+    }
+    if (room && !["addAI", "start", "kick", "speed", "team", "public"].includes(m.t)) return;
     switch (m.t) {
       case "rejoin": { // take a slot back in a running game (page reload, network drop)
         const r = rooms.get(String(m.code ?? "").toUpperCase());
@@ -199,7 +219,7 @@ wss.on("connection", (ws) => {
         readFile(`${REPLAYS}/${id}.json`, "utf8").then((txt) => {
           const r = JSON.parse(txt);
           if (r.sim !== SIM_HASH) { rooms.delete(room.code); room = null; return reply({ t: "error", msg: "This replay was recorded with an older version of the game and can't be played back." }); }
-          room.slots = r.players.map((p) => ({ name: p.name, ai: p.ai }));
+          room.slots = r.players.map((p, i) => ({ name: p.name, ai: p.ai, team: p.team ?? i }));
           room.replay = { id, cmds: r.cmds, ticks: r.ticks, i: 0 }; room.peaceful = !!r.peaceful;
           if (ws.readyState === 1) startRoom(room, r.seed); else rooms.delete(room.code);
         }).catch(() => { rooms.delete(room.code); room = null; reply({ t: "error", msg: "Replay not found." }); });
@@ -221,12 +241,14 @@ wss.on("connection", (ws) => {
         const n = Math.min(3, Math.max(1, Number(m.ais) || 1));
         room = { code: code(), slots: [{ name: clean(m.name), ws }], inbox: [], peaceful: !!m.peaceful };
         for (let i = 0; i < n; i++) room.slots.push({ name: AI_NAMES[i] + (room.peaceful ? "" : " AI"), ai: diff });
+        // "ally": you and the first computer player against the rest
+        room.slots.forEach((x, i) => (x.team = m.teams === "ally" && n >= 2 ? (i < 2 ? 0 : 1) : i));
         rooms.set(room.code, room); pid = 0; seat(room, room.slots[0]); startRoom(room);
         break;
       }
       case "create":
         if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
-        room = { code: code(), slots: [{ name: clean(m.name), ws }], inbox: [], host: ws }; rooms.set(room.code, room); pid = 0;
+        room = { code: code(), slots: [{ name: clean(m.name), ws, team: 0 }], inbox: [], host: ws, public: !!m.public, created: Date.now() }; rooms.set(room.code, room); pid = 0;
         seat(room, room.slots[0]); sendLobby(room);
         break;
       case "join": {
@@ -234,22 +256,31 @@ wss.on("connection", (ws) => {
         if (!r) return reply({ t: "error", msg: "No game with that code." });
         if (r.sim) return reply({ t: "error", msg: "That game has already started." });
         if (r.slots.length >= 4) return reply({ t: "error", msg: "That game is full." });
-        room = r; pid = r.slots.length; r.slots.push({ name: clean(m.name), ws });
+        room = r; pid = r.slots.length; r.slots.push({ name: clean(m.name), ws, team: freeTeam(r) });
         seat(r, r.slots[pid]); sendLobby(r);
         break;
       }
       case "addAI":
         if (room && ws === room.host && !room.sim && room.slots.length < 4) {
           const diff = ["easy", "normal", "hard"].includes(m.diff) ? m.diff : "normal";
-          room.slots.push({ name: freeAiName(room), ai: diff });
+          room.slots.push({ name: freeAiName(room), ai: diff, team: freeTeam(room) });
           sendLobby(room);
         }
         break;
       case "kick":
         if (room && ws === room.host && !room.sim && room.slots[m.slot]?.ai) { room.slots.splice(m.slot, 1); sendLobby(room); }
         break;
+      case "team": // host sets anyone's team, players their own
+        if (room && !room.sim && room.slots[m.slot] && (ws === room.host || room.slots[m.slot].ws === ws) && [0, 1, 2, 3].includes(m.team)) { room.slots[m.slot].team = m.team; sendLobby(room); }
+        break;
+      case "public":
+        if (room && ws === room.host && !room.sim) { room.public = !!m.on; sendLobby(room); }
+        break;
       case "start":
-        if (room && ws === room.host && !room.sim && room.slots.length >= 2) startRoom(room);
+        if (room && ws === room.host && !room.sim && room.slots.length >= 2) {
+          if (new Set(room.slots.map((x) => x.team)).size < 2) return reply({ t: "error", msg: "Everyone is on the same team. Put someone on another team first." });
+          startRoom(room);
+        }
         break;
     }
   });

@@ -23,7 +23,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #14110c; col
 #clock { font-variant-numeric: tabular-nums; color: var(--muted); }
 button { font: 700 13px var(--body); color: var(--ink); background: #3a2d1f; border: 1.5px solid var(--edge); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
 button:hover:not(:disabled) { background: #4d3b28; border-color: var(--gold); }
-button:disabled { opacity: .45; cursor: not-allowed; }
+button:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 #bottom { left: 0; bottom: 0; right: 216px; height: 150px; display: grid; grid-template-columns: minmax(180px, 260px) 1fr; gap: 12px; padding: 10px 14px; background: linear-gradient(rgba(28,22,16,.8), var(--panel)); border-top: 2px solid var(--edge); }
 #info h3 { margin: 0 0 4px; font: 700 17px var(--display); letter-spacing: .02em; }
@@ -55,6 +55,17 @@ input, select { font: 14px var(--body); background: #241b13; color: var(--ink); 
 .err { color: var(--bad); font-weight: 700; min-height: 1.2em; }
 .code { font: 900 34px var(--display); letter-spacing: .2em; color: var(--gold); }
 [hidden] { display: none !important; }
+#chat { left: 12px; bottom: 162px; width: min(420px, 50vw); display: grid; gap: 4px; pointer-events: none; }
+#chatLog { display: grid; gap: 2px; font-size: 13px; }
+#chatLog div, .chatlog div { background: rgba(20,16,11,.72); border-radius: 6px; padding: 3px 8px; width: fit-content; max-width: 100%; overflow-wrap: anywhere; }
+#chatLog div.old { display: none; } #chat.open #chatLog div.old { display: block; }
+#chatLog .sys, .chatlog .sys { color: var(--muted); font-style: italic; }
+#chatBox { pointer-events: auto; display: flex; gap: 6px; }
+#chatBox input { flex: 1; min-width: 0; }
+.chatlog { display: grid; gap: 2px; max-height: 130px; overflow-y: auto; font-size: 13px; }
+.to { font-size: 11px; color: var(--gold); font-weight: 700; margin-right: 4px; }
+#groups { bottom: 158px; right: 228px; display: flex; gap: 4px; }
+#groups button { padding: 3px 8px; font-size: 12px; font-variant-numeric: tabular-nums; }
 #end .card { width: min(860px, 100%); }
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: -1px; }
 table.stats { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
@@ -91,10 +102,12 @@ table.stats thead th { color: var(--muted); font-weight: 700; }
   <button id="mute">Sound on</button>
   <button id="resign">Resign</button>
 </div>
-<div class="hud" id="help" hidden>Drag to select · Right-click (touchpad: two-finger click or Ctrl+click) to move, gather, build, attack · <b>Q W E R T Y</b> build/train/research · <b>A</b> attack-move · <b>.</b> idle villager · <b>H</b> town centre · <b>Space</b> jump to attack · <b>M</b> sound · arrows / screen edge / two-finger swipe to scroll · wheel, pinch or +/- to zoom</div>
+<div class="hud" id="help" hidden>Drag to select · Right-click (touchpad: two-finger click or Ctrl+click) to move, gather, build, attack · <b>Q W E R T Y</b> build/train/research · <b>A</b> attack-move · <b>.</b> idle villager · <b>H</b> town centre · <b>Space</b> jump to attack or ping · <b>Ctrl+1–9</b> make group, <b>1–9</b> select it (twice: jump) · <b>Enter</b> chat · <b>G</b> or <b>Alt+click</b> ping the map for allies · <b>M</b> sound · arrows / screen edge / two-finger swipe to scroll · wheel, pinch or +/- to zoom</div>
 <div class="hud" id="bottom" hidden><div id="info"></div><div id="cmds"></div></div>
 <div class="hud" id="mini" hidden><canvas id="minimap" width="200" height="100"></canvas></div>
 <div class="hud" id="toast"></div>
+<div class="hud" id="chat" hidden><div id="chatLog" aria-live="polite"></div><div id="chatBox" hidden><select id="chatTo" aria-label="Send to"><option value="all">All</option><option value="team">Team</option></select><input id="chatMsg" maxlength="140" placeholder="Message… (Enter to send, Esc to close)" aria-label="Chat message"></div></div>
+<div class="hud" id="groups" hidden></div>
 
 <div class="overlay" id="menu">
   <div class="card">
@@ -109,6 +122,7 @@ table.stats thead th { color: var(--muted); font-weight: 700; }
       <button class="big" id="playSingle">Play</button>
       <button id="watch" title="Computer players fight each other while you watch">Watch AI battle</button>
     </div>
+    <div class="row" id="teamsRow" hidden><label for="teams">Teams</label><select id="teams"><option value="ffa" selected>Free for all</option><option value="ally">You and one ally against the rest</option></select></div>
     <p id="modeHint" hidden>Peaceful: the other villages are your allies. No one attacks, you share vision, and you build for as long as you like. End the game any time to see your stats.</p>
     <h2>Multiplayer</h2>
     <p id="invite" hidden style="color:var(--gold);font-weight:700">You're invited to game <span id="inviteCode"></span>. Enter your name and press Join.</p>
@@ -116,6 +130,11 @@ table.stats thead th { color: var(--muted); font-weight: 700; }
       <button class="big" id="create">Create game</button>
       <input id="joinCode" maxlength="4" placeholder="CODE" style="width:90px;text-transform:uppercase">
       <button id="join">Join</button>
+      <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="pub"> List in open games</label>
+    </div>
+    <div id="lobbies" hidden style="display:grid;gap:6px">
+      <h2>Open games</h2>
+      <div id="lobbyList" style="display:grid;gap:6px"></div>
     </div>
     <div id="replays" hidden style="display:grid;gap:6px">
       <h2>Recent games</h2>
@@ -132,6 +151,10 @@ table.stats thead th { color: var(--muted); font-weight: 700; }
     <div class="code" id="lobbyCode">----</div>
     <div class="row"><input id="inviteLink" readonly aria-label="Invite link" style="flex:1;min-width:0"><button id="copyInvite">Copy invite link</button></div>
     <div id="slots" style="display:grid;gap:6px"></div>
+    <p style="font-size:13px">Players on the same team are allies: they share vision, can't hurt each other and win together. Give everyone a different team for free for all.</p>
+    <label id="pubCtl" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="lobbyPub"> Show this game in the open games list</label>
+    <div class="chatlog" id="lobbyChat"></div>
+    <div class="row"><input id="lobbyMsg" maxlength="140" placeholder="Say something to the lobby…" aria-label="Lobby chat" style="flex:1;min-width:0"><button id="lobbySend">Send</button></div>
     <div class="row" id="hostCtl">
       <select id="aiDiff" aria-label="AI difficulty"><option value="easy">Easy AI</option><option value="normal" selected>Normal AI</option><option value="hard">Hard AI</option></select>
       <button id="addAI">Add AI player</button>

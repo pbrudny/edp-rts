@@ -86,6 +86,8 @@ function connect(first) {
     else if (m.t === "start") { reconnectUntil = 0; startGame(m.me); }
     else if (m.t === "s") { if (ready) onSnap(m); else pendingSnap = m; }
     else if (m.t === "stats") showStats(m);
+    else if (m.t === "chat") addChat(m);
+    else if (m.t === "mark") onMark(m);
   };
   const beat = setInterval(() => ws.readyState === 1 && ws.send('{"t":"ping"}'), 25000); // keep idle lobby alive behind the proxy
   ws.onclose = (ev) => {
@@ -120,13 +122,17 @@ try { $("name").value = localStorage.getItem("er-name") ?? ""; } catch {}
 const saveName = () => { try { localStorage.setItem("er-name", $("name").value.trim()); } catch {} };
 $("watch").onclick = () => connect({ t: "watch", diff: $("diff").value, ais: $("ais").value, speed: 2 });
 $("speed").onchange = () => send({ t: "speed", speed: +$("speed").value });
-$("playSingle").onclick = () => { saveName(); connect({ t: "single", name: nameVal(), diff: $("diff").value, ais: $("ais").value, peaceful: $("mode").value === "peaceful" }); };
-$("mode").onchange = () => { // peaceful: the other players are allies, and difficulty doesn't matter
+$("playSingle").onclick = () => { saveName(); connect({ t: "single", name: nameVal(), diff: $("diff").value, ais: $("ais").value, peaceful: $("mode").value === "peaceful", teams: $("teamsRow").hidden ? "ffa" : $("teams").value }); };
+$("mode").onchange = $("ais").onchange = () => { // peaceful: the other players are allies, and difficulty doesn't matter
   const p = $("mode").value === "peaceful";
   for (const o of $("ais").options) o.textContent = `${o.value} ${p ? (o.value === "1" ? "ally" : "allies") : o.value === "1" ? "opponent" : "opponents"}`;
   $("diff").hidden = p; $("modeHint").hidden = !p;
+  $("teamsRow").hidden = p || +$("ais").value < 2; // teams need at least two computer players
 };
-$("create").onclick = () => { saveName(); connect({ t: "create", name: nameVal() }); };
+$("create").onclick = () => { saveName(); connect({ t: "create", name: nameVal(), public: $("pub").checked }); };
+$("lobbyPub").onchange = () => send({ t: "public", on: $("lobbyPub").checked });
+$("lobbySend").onclick = () => { const v = $("lobbyMsg").value.trim(); if (v) send({ t: "chat", text: v }); $("lobbyMsg").value = ""; };
+$("lobbyMsg").onkeydown = (e) => e.key === "Enter" && $("lobbySend").click();
 $("join").onclick = () => { saveName(); const c = $("joinCode").value.trim().toUpperCase(); if (c.length === 4) connect({ t: "join", code: c, name: nameVal() }); else $("err").textContent = "Enter the 4-letter code."; };
 $("joinCode").onkeydown = (e) => e.key === "Enter" && $("join").click();
 $("addAI").onclick = () => send({ t: "addAI", diff: $("aiDiff").value });
@@ -148,13 +154,77 @@ function showLobby(m) {
   const amHost = m.you === m.host;
   if (amHost && !wasHost && lobbySeen) toast("The host left. You are the host now.");
   wasHost = amHost; lobbySeen = true;
-  $("slots").innerHTML = m.slots.map((s, i) => `<div class="slot"><b style="background:${COLORS[i]}"></b>${esc(s.name)}${s.ai ? ` <small>(${s.ai})</small>` : ""}${i === m.host ? " <small>host</small>" : ""}${i === m.you ? " <small>(you)</small>" : ""}${amHost && s.ai ? ` <button data-kick="${i}" style="margin-left:auto">Remove</button>` : ""}</div>`).join("");
+  const teamSel = (s, i) => `<select data-team="${i}" aria-label="Team of ${esc(s.name)}" style="margin-left:auto" ${amHost || i === m.you ? "" : "disabled"}>${[0, 1, 2, 3].map((t) => `<option value="${t}" ${s.team === t ? "selected" : ""}>Team ${t + 1}</option>`).join("")}</select>`;
+  $("slots").innerHTML = m.slots.map((s, i) => `<div class="slot"><b style="background:${COLORS[i]}"></b>${esc(s.name)}${s.ai ? ` <small>(${s.ai})</small>` : ""}${i === m.host ? " <small>host</small>" : ""}${i === m.you ? " <small>(you)</small>" : ""}${teamSel(s, i)}${amHost && s.ai ? ` <button data-kick="${i}">Remove</button>` : ""}</div>`).join("");
   $("slots").querySelectorAll("[data-kick]").forEach((b) => (b.onclick = () => send({ t: "kick", slot: +b.dataset.kick })));
+  $("slots").querySelectorAll("[data-team]").forEach((el) => (el.onchange = () => send({ t: "team", slot: +el.dataset.team, team: +el.value })));
+  $("pubCtl").hidden = !amHost; $("lobbyPub").checked = !!m.public;
+  const teams = new Set(m.slots.map((s) => s.team));
   $("hostCtl").hidden = !amHost; $("waitHost").hidden = amHost;
-  $("start").disabled = m.slots.length < 2;
+  $("start").disabled = m.slots.length < 2 || teams.size < 2;
+  $("start").title = teams.size < 2 && m.slots.length >= 2 ? "Everyone is on the same team" : "";
 }
 
 let lobbySeen = false;
+
+// ------------------------------------------------------------------ chat
+const chatLines = [];
+function addChat(m) {
+  const line = { at: Date.now(), html: `${m.team ? `<span class="to">TEAM</span>` : ""}<b class="dot" style="background:${COLORS[m.color] ?? "#888"}"></b><b>${esc(m.from)}:</b> ${esc(m.text)}` };
+  chatLines.push(line); if (chatLines.length > 40) chatLines.shift();
+  const div = document.createElement("div"); div.innerHTML = line.html;
+  $("lobbyChat").append(div); $("lobbyChat").scrollTop = 1e9;
+  renderChat(); if (playing) Sfx.play("chat", 0.7, 100);
+}
+function renderChat() { // in game: the last 6 lines, fading out after 15 s unless the chat box is open
+  $("chatLog").innerHTML = chatLines.slice(-6).map((l) => `<div class="${Date.now() - l.at > 15000 ? "old" : ""}">${l.html}</div>`).join("");
+}
+setInterval(() => playing && renderChat(), 2000);
+function openChat(team) {
+  if (me < 0) return;
+  $("chat").classList.add("open"); $("chatBox").hidden = false;
+  $("chatTo").hidden = !teamGame() || snap?.peaceful; $("chatTo").value = team && teamGame() ? "team" : "all";
+  renderChat(); $("chatMsg").focus();
+}
+function closeChat() { $("chat").classList.remove("open"); $("chatBox").hidden = true; $("chatMsg").value = ""; $("chatMsg").blur(); renderChat(); }
+$("chatMsg").addEventListener("keydown", (e) => {
+  e.stopPropagation();
+  if (e.key === "Escape") closeChat();
+  else if (e.key === "Tab" && !$("chatTo").hidden) { e.preventDefault(); $("chatTo").value = $("chatTo").value === "all" ? "team" : "all"; }
+  else if (e.key === "Enter") { const v = $("chatMsg").value.trim(); if (v) send({ t: "chat", text: v, team: $("chatTo").value === "team" && !$("chatTo").hidden }); closeChat(); }
+});
+
+// ------------------------------------------------------------------ map pings (allies only)
+const pings = [];
+function ping(wx, wy) { if (me >= 0 && map) send({ t: "mark", x: wx, y: wy }); }
+function onMark(m) {
+  pings.push({ x: m.x, y: m.y, c: TINT[m.color] ?? 0xffffff, css: COLORS[m.color] ?? "#fff", t: performance.now() });
+  alertAt = iso(m.x, m.y); Sfx.play("ping", 0.9, 150);
+  if (m.color !== me) toast(`${m.from} pinged the map (Space to jump there).`);
+}
+
+// ------------------------------------------------------------------ control groups: Ctrl/Alt+N set, Shift+N add, N select, N twice jump
+const groups = Array.from({ length: 10 }, () => []);
+let lastGroup = -1, lastGroupAt = 0, groupsKey = "";
+function groupKey(e, n) {
+  const live = (g) => g.filter((id) => ent(id)?.[2] === me);
+  if (e.ctrlKey || e.altKey) { e.preventDefault(); groups[n] = [...sel].filter((id) => ent(id)?.[2] === me); toast(groups[n].length ? `Group ${n} set (${groups[n].length}).` : `Group ${n} cleared.`); }
+  else if (e.shiftKey) { groups[n] = [...new Set([...live(groups[n]), ...[...sel].filter((id) => ent(id)?.[2] === me)])]; toast(`Group ${n}: ${groups[n].length}.`); }
+  else {
+    groups[n] = live(groups[n]); if (!groups[n].length) return;
+    sel = new Set(groups[n]);
+    if (lastGroup === n && performance.now() - lastGroupAt < 450) { const ps = groups[n].map((id) => pos(ent(id))); lookAt(iso(ps.reduce((a, p) => a + p.x, 0) / ps.length, ps.reduce((a, p) => a + p.y, 0) / ps.length)); }
+    lastGroup = n; lastGroupAt = performance.now();
+  }
+  renderCmds(); renderGroups();
+}
+function renderGroups() {
+  const counts = groups.map((g) => g.filter((id) => ent(id)?.[2] === me).length), key = counts.join();
+  if (key === groupsKey) return; groupsKey = key;
+  $("groups").hidden = !counts.some(Boolean);
+  $("groups").innerHTML = counts.map((c, n) => (c ? `<button data-g="${n}" title="Group ${n}: press ${n} to select, twice to jump">${n} · ${c}</button>` : "")).join("");
+  $("groups").querySelectorAll("[data-g]").forEach((b) => (b.onclick = (ev) => groupKey({ ctrlKey: false, altKey: false, shiftKey: ev.shiftKey, preventDefault() {} }, +b.dataset.g)));
+}
 
 // ------------------------------------------------------------------ map + fog
 async function setMap(m) {
@@ -204,11 +274,15 @@ function updateFog() {
 function startGame(pid) {
   me = pid; playing = true; sel.clear(); peacefulStart = true;
   for (const id of ["menu", "lobby"]) $(id).hidden = true;
-  for (const id of ["top", "bottom", "mini", "help"]) $(id).hidden = false;
-  if (me < 0) { for (const id of ["resign", "resbar"]) $(id).hidden = true; $("speedCtl").hidden = false; $("help").hidden = true; }
+  for (const id of ["top", "bottom", "mini", "help", "chat"]) $(id).hidden = false;
+  if (me < 0) { for (const id of ["resign", "resbar", "chat"]) $(id).hidden = true; $("speedCtl").hidden = false; $("help").hidden = true; }
   setTimeout(() => ($("help").hidden = true), 20000);
 }
 const ent = (id) => snap?.map.get(id);
+// allies: same team (or a peaceful game). Teams only matter when somebody shares one
+const ally = (a, b) => a === b || !!snap?.peaceful || (a >= 0 && b >= 0 && snap?.players[a]?.team === snap?.players[b]?.team);
+const teamGame = () => !!snap && new Set(snap.players.map((p) => p.team)).size < snap.players.length;
+const winners = (st) => st.winTeam != null ? st.players.filter((p) => p.team === st.winTeam).map((p) => p.name).join(" & ") : null;
 const kindOf = (e) => kinds[e[1]];
 const isUnitE = (e) => KINDS[kindOf(e)].type === "unit";
 const visibleAt = (x, y) => vis && vis[Math.floor(y) * map.w + Math.floor(x)] === 1;
@@ -234,15 +308,18 @@ function onSnap(s) {
   if (s.over) clearSession();
   if (s.over && !$("end").dataset.shown) {
     $("end").dataset.shown = 1;
-    const won = s.winner === me;
+    const won = s.winTeam != null && s.players[me]?.team === s.winTeam;
     if (s.peaceful) { $("end").hidden = false; $("endTitle").textContent = replayId ? "Replay over" : "Well built!"; $("endText").textContent = `A peaceful realm, ${fmtClock(s.time)} of building.`; return; }
-    if (me < 0) { $("end").hidden = false; $("endTitle").textContent = replayId ? "Replay over" : "Battle over"; $("endText").textContent = `${s.winner != null ? s.players[s.winner].name + " won" : "No winner"} after ${fmtClock(s.time)}.`; return; }
+    if (me < 0) { $("end").hidden = false; $("endTitle").textContent = replayId ? "Replay over" : "Battle over"; $("endText").textContent = `${winners(s) ? winners(s) + " won" : "No winner"} after ${fmtClock(s.time)}.`; return; }
     Sfx.play(won ? "victory" : "defeat");
-    setTimeout(() => { $("end").hidden = false; $("endTitle").textContent = won ? "Victory" : "Defeat"; $("endText").textContent = won ? `Your realm stands alone after ${fmtClock(s.time)}.` : `${s.winner != null ? s.players[s.winner].name + " won" : "The game ended"} after ${fmtClock(s.time)}.`; }, 1500);
+    setTimeout(() => { $("end").hidden = false; $("endTitle").textContent = won ? "Victory" : "Defeat"; $("endText").textContent = won ? (teamGame() ? `Your team wins after ${fmtClock(s.time)}.` : `Your realm stands alone after ${fmtClock(s.time)}.`) : `${winners(s) ? winners(s) + " won" : "The game ended"} after ${fmtClock(s.time)}.`; }, 1500);
   } else if (!s.over && s.players[me] && !s.players[me].alive && !$("end").dataset.shown) {
-    $("end").dataset.shown = 1; Sfx.play("defeat"); $("end").hidden = false; $("endTitle").textContent = "Defeat"; $("endText").textContent = "All your buildings were destroyed.";
+    const mates = s.players.some((p, i) => i !== me && p.alive && ally(i, me));
+    if (mates) { if (!toldOut) { toldOut = true; Sfx.play("defeat"); toast("Your buildings are gone, but your team fights on. You can still chat and ping."); } }
+    else { $("end").dataset.shown = 1; Sfx.play("defeat"); $("end").hidden = false; $("endTitle").textContent = "Defeat"; $("endText").textContent = "All your buildings were destroyed."; }
   }
 }
+let toldOut = false;
 function createSprite(e) {
   const kind = kindOf(e), k = KINDS[kind], sp = makeSprite();
   sp.kind = kind; sp.owner = e[2];
@@ -350,6 +427,7 @@ view.addEventListener("mousedown", (e) => {
   const w = screenToWorld(e.clientX, e.clientY);
   if (e.button === 2) return; // handled by the contextmenu event (works for mouse and touchpad)
   if (e.button === 0 && e.ctrlKey) { secondary(e.clientX, e.clientY); return; } // Ctrl+click = right-click (Mac)
+  if (e.button === 0 && e.altKey) { ping(w.x, w.y); return; } // Alt+click = ping for allies
   if (e.button === 1) { e.preventDefault(); drag = { pan: true, x1: e.clientX, y1: e.clientY, cx: cam.x, cy: cam.y }; return; }
   if (e.button !== 0) return;
   if (mode?.build) {
@@ -417,15 +495,19 @@ function rightClick(sx, sy, wx, wy) {
   const ids = units.map((u) => u[0]);
   const t = pick(sx, sy);
   const tx = Math.floor(wx), ty = Math.floor(wy);
-  if (t && t[0] !== ids[0]) { cmd({ t: "target", ids, id: t[0] }); marks.push({ x: wx, y: wy, t: performance.now(), c: t[2] >= 0 && t[2] !== me && !snap.peaceful ? 0xe0674f : 0xe8b64c }); return; }
+  if (t && t[0] !== ids[0]) { cmd({ t: "target", ids, id: t[0] }); marks.push({ x: wx, y: wy, t: performance.now(), c: t[2] >= 0 && !ally(t[2], me) ? 0xe0674f : 0xe8b64c }); return; }
   const tree = treeAt(sx, sy, wx, wy);
   if (tree && units.some((u) => kindOf(u) === "villager")) { cmd({ t: "tree", ids, x: tree.x, y: tree.y }); marks.push({ x: tree.x + 0.5, y: tree.y + 0.5, t: performance.now(), c: 0xe8b64c }); return; }
   cmd({ t: "move", ids, x: wx, y: wy }); marks.push({ x: wx, y: wy, t: performance.now(), c: 0x6fbf73 });
 }
 addEventListener("keydown", (e) => {
-  if (!playing || e.target.tagName === "INPUT") return;
+  if (!playing || e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  const digit = /^Digit(\d)$/.exec(e.code);
+  if (digit && me >= 0) return groupKey(e, +digit[1]);
+  if (e.key === "Enter" && me >= 0 && !snap?.over) { e.preventDefault(); return openChat(e.shiftKey); }
   keys.add(e.key);
   const k = e.key.toLowerCase();
+  if (k === "g" && mouse.in && !e.ctrlKey && !e.metaKey) { const w = screenToWorld(mouse.x, mouse.y); return ping(w.x, w.y); }
   if (k === "escape") { if (mode) mode = null; else { sel.clear(); renderCmds(); } }
   else if (HOTKEYS.includes(k)) { const b = $("cmds").querySelector(`[data-key="${k}"]`); if (b && !b.disabled) b.click(); }
   else if (k === "a" && myUnits().some((u) => kindOf(u) !== "villager")) { mode = { attackMove: true }; toast("Attack-move: left-click a target point."); }
@@ -449,13 +531,13 @@ function selectIdle() {
 // ------------------------------------------------------------------ HUD
 let lastCmdKey = "";
 function updateHud() {
-  $("players").innerHTML = snap.players.map((p, i) => `<span class="${p.alive ? "" : "dead"}"><b style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : snap.peaceful && me >= 0 ? " (ally)" : ""}</span>`).join("");
   $("clock").textContent = fmtClock(snap.time);
   const r = snap.res; if (!r) { renderInfo(selected()); return; }
   $("rFood").textContent = r.food; $("rWood").textContent = r.wood; $("rGold").textContent = r.gold;
   $("rPop").textContent = `${r.pop}/${r.cap}`; $("rPop").style.color = r.pop >= r.cap ? "var(--bad)" : "";
   $("clock").textContent = fmtClock(snap.time);
-  $("players").innerHTML = snap.players.map((p, i) => `<span class="${p.alive ? "" : "dead"}"><b style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : snap.peaceful && me >= 0 ? " (ally)" : ""}</span>`).join("");
+  $("players").innerHTML = snap.players.map((p, i) => `<span class="${p.alive ? "" : "dead"}"><b style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : me >= 0 && ally(i, me) ? " (ally)" : ""}${teamGame() && !snap.peaceful ? ` <small style="color:var(--muted)">T${p.team + 1}</small>` : ""}</span>`).join("");
+  renderGroups();
   const s = selected();
   const key = s.map((e) => e[0] + ":" + (isUnitE(e) ? "" : JSON.stringify(e[8]) + e[6])).join() + "|" + r.food + r.wood + r.gold + "|" + snap.techs;
   renderInfo(s);
@@ -581,7 +663,7 @@ app.ticker.add(() => {
         if (act === 1 && fi === 3 && (kind === "swordsman" || kind === "spearman" || kind === "cavalry")) Sfx.play("clash", hearing(s) * 0.6, 260);
         if (act === 1 && kind === "ram" && fi === 4) { if (!sp.hitFrame) { sp.hitFrame = true; Sfx.play("hammer", hearing(s), 300); burst(s.x + Math.cos(e[8]) * 20, s.y - 10, 6, 0x8a7a66, 1.2, 0.7); } } else if (act === 1 && kind === "ram") sp.hitFrame = false;
       }
-      if (sel.has(e[0])) ring(s.x, s.y, 13, 6.5, e[2] === me ? 0xf3ead7 : snap.peaceful ? 0x6fbf73 : 0xe0674f);
+      if (sel.has(e[0])) ring(s.x, s.y, 13, 6.5, e[2] === me ? 0xf3ead7 : ally(e[2], me) ? 0x6fbf73 : 0xe0674f);
       if (sel.has(e[0]) || e[5] < k.hp) bar(s.x - 11, s.y - 46, 22, e[5] / k.hp);
     } else {
       const c = iso(e[3] + k.w / 2, e[4] + k.h / 2);
@@ -597,7 +679,7 @@ app.ticker.add(() => {
         }
         if (kind === "house" && built >= 1 && Math.random() < 0.03 && onScreenPx(c)) spawn(c.x - 4, c.y - 62, { vx: 5, vy: -10, color: 0xcfc8c0, size: 0.7, life: 2.5, grow: 2, alpha: 0.28 }); // chimney smoke
       }
-      if (sel.has(e[0])) { const pts = [iso(e[3], e[4]), iso(e[3] + k.w, e[4]), iso(e[3] + k.w, e[4] + k.h), iso(e[3], e[4] + k.h)]; ringG.lineStyle(2, e[2] === me ? 0xf3ead7 : e[2] < 0 ? 0xe8b64c : snap.peaceful ? 0x6fbf73 : 0xe0674f, 0.9); ringG.drawPolygon(pts.flatMap((q) => [q.x, q.y])); }
+      if (sel.has(e[0])) { const pts = [iso(e[3], e[4]), iso(e[3] + k.w, e[4]), iso(e[3] + k.w, e[4] + k.h), iso(e[3], e[4] + k.h)]; ringG.lineStyle(2, e[2] === me ? 0xf3ead7 : e[2] < 0 ? 0xe8b64c : ally(e[2], me) ? 0x6fbf73 : 0xe0674f, 0.9); ringG.drawPolygon(pts.flatMap((q) => [q.x, q.y])); }
       if (k.type === "building" && (sel.has(e[0]) || e[5] < k.hp * 0.999) && e[6] >= 100) bar(c.x - k.w * 14, c.y - k.h * 16 - 60, k.w * 28, e[5] / k.hp);
       if (k.type === "building" && e[6] < 100) bar(c.x - k.w * 14, c.y + 8, k.w * 28, e[6] / 100, 0xe8b64c);
       if (sel.has(e[0]) && e[2] === me && e[8] && e[8][0].length) bar(c.x - k.w * 14, c.y + 14, k.w * 28, e[8][1] / 100, 0x6fa8ff);
@@ -623,6 +705,13 @@ app.ticker.add(() => {
   stepParticles(dt);
   marks = marks.filter((m) => now - m.t < 700);
   for (const m of marks) { const f = (now - m.t) / 700, p = iso(m.x, m.y); ringG.lineStyle(2, m.c, 1 - f); ringG.drawEllipse(p.x, p.y, 6 + f * 14, 3 + f * 7); }
+  for (let i = pings.length - 1; i >= 0; i--) { // three pulses over 3 s, drawn above everything
+    const pg = pings[i], age = (now - pg.t) / 1000; if (age > 3) { pings.splice(i, 1); continue; }
+    const p = iso(pg.x, pg.y), f = (age % 1);
+    barG.lineStyle(3, pg.c, 1 - f); barG.drawEllipse(p.x, p.y, 10 + f * 36, 5 + f * 18);
+    barG.lineStyle(2, 0xffffff, 0.9 * (1 - age / 3)); barG.moveTo(p.x, p.y); barG.lineTo(p.x, p.y - 40);
+    barG.beginFill(pg.c, 1 - age / 3); barG.drawPolygon([p.x, p.y - 40, p.x + 14, p.y - 34, p.x, p.y - 28]); barG.endFill();
+  }
   if (mode?.build) drawGhost(); else if (ghostSprite) ghostSprite.visible = false;
   if (drag && !drag.pan && (Math.abs(drag.x2 - drag.x1) > 4 || Math.abs(drag.y2 - drag.y1) > 4)) {
     screenUi.lineStyle(1, 0xe8d9a8, 1); screenUi.beginFill(0xe8d9a8, 0.08);
@@ -679,15 +768,17 @@ function drawMinimap() {
     if (k.type === "unit") mctx.fillRect(e[3] / 100 - 0.8, e[4] / 100 - 0.8, 1.6, 1.6); else mctx.fillRect(e[3], e[4], k.w, k.h);
   }
   mctx.setTransform(1, 0, 0, 1, 0, 0);
+  for (const pg of pings) { const [x, y] = mmProj(pg.x, pg.y), f = ((performance.now() - pg.t) / 1000) % 1; mctx.strokeStyle = pg.css; mctx.lineWidth = 2; mctx.beginPath(); mctx.arc(x, y, 3 + f * 9, 0, Math.PI * 2); mctx.stroke(); }
   const corners = [[0, 0], [app.screen.width, 0], [app.screen.width, app.screen.height], [0, app.screen.height]].map(([x, y]) => { const w = screenToWorld(x, y); return mmProj(w.x, w.y); });
   mctx.strokeStyle = "#fff"; mctx.lineWidth = 1; mctx.beginPath(); corners.forEach(([x, y], i) => (i ? mctx.lineTo(x, y) : mctx.moveTo(x, y))); mctx.closePath(); mctx.stroke();
 }
 mm.addEventListener("contextmenu", (e) => { e.preventDefault(); mmClick(e, true); });
-mm.addEventListener("mousedown", (e) => { if (e.button === 0 && !e.ctrlKey) mmClick(e, false); else if (e.button === 0) mmClick(e, true); });
-function mmClick(e, secondaryClick) {
+mm.addEventListener("mousedown", (e) => { if (e.button === 0 && e.altKey) mmClick(e, false, true); else if (e.button === 0 && !e.ctrlKey) mmClick(e, false); else if (e.button === 0) mmClick(e, true); });
+function mmClick(e, secondaryClick, pingIt) {
   if (!map) return;
   const r = mm.getBoundingClientRect(), u = ((e.clientX - r.left) / r.width) * mm.width - map.h * mmA, v = ((e.clientY - r.top) / r.height) * mm.height;
   const wx = (u / mmA + (2 * v) / mmA) / 2, wy = ((2 * v) / mmA - u / mmA) / 2;
+  if (pingIt) return ping(wx, wy);
   if (secondaryClick) { const ids = myUnits().map((x) => x[0]); if (ids.length) cmd({ t: "move", ids, x: wx, y: wy }); return; }
   lookAt(iso(wx, wy));
 }
@@ -702,18 +793,26 @@ function embersStep(dt) {
 // ------------------------------------------------------------------ replays
 let replayId = null;
 function watchReplay(id) { replayId = id; history.replaceState(null, "", `/?replay=${id}`); connect({ t: "replay", id, speed: 2 }); }
+async function loadLobbies() { // open public games, refreshed while the menu is showing
+  if ($("menu").hidden) return;
+  let list = [];
+  try { list = await (await fetch("/api/lobbies")).json(); } catch {}
+  $("lobbies").hidden = !list.length;
+  $("lobbyList").innerHTML = list.map((l) => `<div class="slot"><span style="flex:1">${esc(l.host)}'s game <small style="color:var(--muted)">· ${l.players.length}/4 · ${l.players.map(esc).join(", ")}</small></span><button data-join="${esc(l.code)}">Join</button></div>`).join("");
+  $("lobbyList").querySelectorAll("[data-join]").forEach((b) => (b.onclick = () => { $("joinCode").value = b.dataset.join; $("join").click(); }));
+}
 async function loadReplays() {
   let list = [];
   try { list = await (await fetch("/api/replays")).json(); } catch {}
   $("replays").hidden = !list.length;
   const when = (d) => new Date(d).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  $("replayList").innerHTML = list.slice(0, 8).map((r) => `<div class="slot"><span style="flex:1">${r.players.map((p) => `<b style="background:${p.color};display:inline-block;width:9px;height:9px;border-radius:50%"></b> ${esc(p.name)}${p.name === r.winner ? " 👑" : ""}`).join(" &nbsp;")}</span><small style="color:var(--muted)">${r.peaceful ? "peaceful · " : ""}${when(r.date)} · ${r.minutes} min</small><button data-replay="${esc(r.id)}" ${r.playable ? "" : `disabled title="Recorded with an older version of the game"`}>Watch</button></div>`).join("");
+  $("replayList").innerHTML = list.slice(0, 8).map((r) => `<div class="slot"><span style="flex:1">${r.players.map((p) => `<b style="background:${p.color};display:inline-block;width:9px;height:9px;border-radius:50%"></b> ${esc(p.name)}${(r.winners ?? []).includes(p.name) ? " 👑" : ""}`).join(" &nbsp;")}</span><small style="color:var(--muted)">${r.peaceful ? "peaceful · " : ""}${when(r.date)} · ${r.minutes} min</small><button data-replay="${esc(r.id)}" ${r.playable ? "" : `disabled title="Recorded with an older version of the game"`}>Watch</button></div>`).join("");
   $("replayList").querySelectorAll("[data-replay]").forEach((b) => (b.onclick = () => watchReplay(b.dataset.replay)));
 }
 const qs = new URLSearchParams(location.search), qsReplay = qs.get("replay"), qsJoin = (qs.get("join") ?? "").toUpperCase().replace(/[^A-Z]/g, "").slice(0, 4);
 if (qsReplay) setTimeout(() => watchReplay(qsReplay), 300);
 else {
-  loadReplays();
+  loadReplays(); loadLobbies(); setInterval(loadLobbies, 4000);
   if (qsJoin.length === 4) { // invite link: code filled in, the player only adds a name and presses Join
     $("joinCode").value = qsJoin; $("inviteCode").textContent = qsJoin; $("invite").hidden = false;
     setTimeout(() => ($("name").value ? $("join") : $("name")).focus(), 100);
@@ -726,7 +825,7 @@ else {
 // ------------------------------------------------------------------ end-of-game stats (table + two line charts)
 function showStats(m) {
   const P = m.players, fmt = (n) => Math.round(n).toLocaleString();
-  const rows = P.map((p, i) => `<tr><th scope="row"><b class="dot" style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : ""}</th><td>${m.peaceful ? (p.ai ? "Ally" : "Builder") : i === m.winner ? "Winner" : p.alive ? "—" : "Defeated"}</td><td>${p.villagers}</td><td>${p.military}</td><td>${p.killed}</td><td>${p.lost}</td><td>${fmt(p.food)}</td><td>${fmt(p.wood)}</td><td>${fmt(p.gold)}</td><td>${p.techs.length}</td></tr>`).join("");
+  const rows = P.map((p, i) => `<tr><th scope="row"><b class="dot" style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : ""}</th><td>${m.peaceful ? (p.ai ? "Ally" : "Builder") : m.winTeam != null && p.team === m.winTeam ? "Winner" : p.alive ? "—" : "Defeated"}</td><td>${p.villagers}</td><td>${p.military}</td><td>${p.killed}</td><td>${p.lost}</td><td>${fmt(p.food)}</td><td>${fmt(p.wood)}</td><td>${fmt(p.gold)}</td><td>${p.techs.length}</td></tr>`).join("");
   const T = m.timeline;
   const legend = `<div class="legend">${P.map((p) => `<span><b class="dot" style="background:${p.color}"></b>${esc(p.name)}</span>`).join("")}</div>`;
   $("stats").innerHTML = `
@@ -739,7 +838,7 @@ function showStats(m) {
   if ($("end").hidden) { // replay reached its end without a winner, or a spectator joined late
     $("end").hidden = false; $("end").dataset.shown = 1;
     $("endTitle").textContent = replayId ? "Replay over" : "Game over";
-    $("endText").textContent = m.peaceful ? `A peaceful realm, ${fmtClock(m.time)} of building.` : `${m.winner != null ? P[m.winner].name + " won" : "No winner"} after ${fmtClock(m.time)}.`;
+    $("endText").textContent = m.peaceful ? `A peaceful realm, ${fmtClock(m.time)} of building.` : `${winners(m) ? winners(m) + " won" : "No winner"} after ${fmtClock(m.time)}.`;
   }
 }
 const SVG_W = 360, SVG_H = 170, PAD = { l: 38, r: 70, t: 10, b: 24 };

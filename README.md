@@ -16,7 +16,21 @@ and keep only a small guard. There is no winner: the player builds as long as th
 - Rejoin: every human gets a secret session token (kept in `localStorage`). If the connection drops or the page is reloaded, the client
   rejoins automatically (`{t:"rejoin", code, token}`). The slot is held for 60 s, then the player is resigned. Other players get notices.
   While every human in a game is disconnected, the game pauses. Opening the game in a second tab moves it there (first tab closes with code 4000).
-- `node test-mp.mjs ws://127.0.0.1:3000` checks all of this against a running server.
+- Open games: tick "List in open games" when creating (or the checkbox in the lobby, host only). Public lobbies that aren't full or started
+  are listed on the menu (`GET /api/lobbies`, refreshed every 4 s) with a Join button.
+- `node test-mp.mjs ws://127.0.0.1:3000` checks all of this (plus teams, chat, pings) against a running server.
+
+## Teams
+Every lobby slot has a team (1-4); new players and AIs start on a free team (= free for all). The host can change anyone's team, a player
+their own. Start needs at least two teams. Allies share vision, can't attack each other, get neighbouring start corners, and win together
+when they are the last team standing; a defeated player keeps watching their team's vision. Single player with 2+ opponents has
+"You and one ally against the rest". In the sim: `players[i].team`, `allies()` / `enemies()`, `s.winTeam`.
+
+## Chat, pings, control groups
+- Chat: lobby chat box; in game Enter opens chat (Shift+Enter or Tab = team only), last 6 lines fade after 15 s. Max 140 chars, 5 per 5 s.
+- Pings: Alt+click (map or minimap) or G at the cursor. Allies see a pulsing flag on the map and minimap, a sound, and Space jumps there.
+- Control groups (client only): Ctrl+1-9 (or Alt) sets, Shift+N adds, N selects, N twice jumps the camera. A bar above the minimap shows them.
+Chat and pings are not part of replays.
 
 ## Units and counters
 Damage = attack + bonus vs the target − armour (melee) or arrow armour (archers, town centres), at least 1.
@@ -51,7 +65,8 @@ browser --commands (WebSocket)--> server: room --> shared/sim.js (authoritative,
 - Events: `game_started`, `building_placed`, `building_completed`, `unit_trained`, `tech_researched`, `unit_killed`, `building_destroyed`, `attack_launched`, `player_defeated`, `game_over`.
 
 ## Controls
-Left-drag select · right-click move/gather/build/attack · Q W E R build or train · A attack-move · S stop · `.` idle villager · H town centre · arrows/screen edge scroll · wheel zoom · minimap click to jump, right-click to move.
+Left-drag select · right-click move/gather/build/attack · Q W E R T Y build, train or research · A attack-move · S stop · `.` idle villager · H town centre ·
+Ctrl+1-9 / 1-9 control groups · Enter chat · G or Alt+click ping · arrows/screen edge scroll · wheel zoom · minimap click to jump, right-click to move.
 
 ## Run / test
 - Deploy: `/root/edp-rts` on steve107, `docker compose up -d --build` (clean env; `.env` has `EDP_BROKER_DEMO_PASSWORD`).
