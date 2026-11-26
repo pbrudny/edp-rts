@@ -57,13 +57,13 @@ async function loadReplays() {
   }
   replays.sort((a, b) => b.date - a.date);
 }
-const summary = (r) => ({ id: r.id, date: r.date, minutes: r.minutes, winner: r.winner, players: r.players, playable: r.sim === SIM_HASH });
+const summary = (r) => ({ id: r.id, date: r.date, minutes: r.minutes, winner: r.winner, peaceful: !!r.peaceful, players: r.players, playable: r.sim === SIM_HASH });
 async function saveReplay(room) {
   const s = room.sim;
   if (room.saved || room.replay || !room.slots.some((x) => !x.ai) || s.time < 60) return null; // only real games of 1+ minute
   room.saved = true;
   const r = { v: 1, id: room.id, sim: SIM_HASH, date: Date.now(), seed: s.seed, ticks: s.tick, minutes: +(s.time / 60).toFixed(1),
-    winner: s.winner != null ? s.players[s.winner].name : null, players: s.players.map((p) => ({ name: p.name, color: p.color, ai: p.ai?.diff ?? null })),
+    winner: s.winner != null ? s.players[s.winner].name : null, peaceful: s.peaceful, players: s.players.map((p) => ({ name: p.name, color: p.color, ai: p.ai?.diff ?? null })),
     cmds: room.rec, stats: gameStats(s) };
   try {
     await writeFile(`${REPLAYS}/${r.id}.json`, JSON.stringify(r));
@@ -89,7 +89,7 @@ function lobbyState(room) {
 function sendRoom(room, msg) { const m = JSON.stringify(msg); for (const s of room.slots) if (s.ws?.readyState === 1) s.ws.send(m); }
 
 function startRoom(room, seed) {
-  room.sim = createGame({ seed, players: room.slots.map((s) => ({ name: s.name, ai: s.ai })) });
+  room.sim = createGame({ seed, peaceful: !!room.peaceful, players: room.slots.map((s) => ({ name: s.name, ai: s.ai })) });
   room.id = randomUUID().replace(/-/g, "").slice(0, 10);
   room.rec = []; // [tick, player, command]
   const map = JSON.stringify(mapInfo(room.sim));
@@ -174,7 +174,7 @@ wss.on("connection", (ws) => {
           const r = JSON.parse(txt);
           if (r.sim !== SIM_HASH) { rooms.delete(room.code); room = null; return reply({ t: "error", msg: "This replay was recorded with an older version of the game and can't be played back." }); }
           room.slots = r.players.map((p) => ({ name: p.name, ai: p.ai }));
-          room.replay = { id, cmds: r.cmds, ticks: r.ticks, i: 0 };
+          room.replay = { id, cmds: r.cmds, ticks: r.ticks, i: 0 }; room.peaceful = !!r.peaceful;
           if (ws.readyState === 1) startRoom(room, r.seed); else rooms.delete(room.code);
         }).catch(() => { rooms.delete(room.code); room = null; reply({ t: "error", msg: "Replay not found." }); });
         break;
@@ -193,8 +193,8 @@ wss.on("connection", (ws) => {
         if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
         const diff = ["easy", "normal", "hard"].includes(m.diff) ? m.diff : "normal";
         const n = Math.min(3, Math.max(1, Number(m.ais) || 1));
-        room = { code: code(), slots: [{ name: clean(m.name), ws }], inbox: [] };
-        for (let i = 0; i < n; i++) room.slots.push({ name: ["Ashford", "Brennmark", "Cold Harbour"][i] + " AI", ai: diff });
+        room = { code: code(), slots: [{ name: clean(m.name), ws }], inbox: [], peaceful: !!m.peaceful };
+        for (let i = 0; i < n; i++) room.slots.push({ name: ["Ashford", "Brennmark", "Cold Harbour"][i] + (room.peaceful ? "" : " AI"), ai: diff });
         rooms.set(room.code, room); pid = 0; startRoom(room);
         break;
       }

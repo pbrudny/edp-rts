@@ -5,8 +5,8 @@ import { createGame, step, command, gameStats, KINDS, TECHS, BUILDABLE } from ".
 const players = [{ name: "Human" }, { name: "AI1", ai: "hard" }, { name: "AI2", ai: "normal" }];
 const hash = (s) => JSON.stringify([...s.ents.values()].map((e) => [e.id, e.kind, e.owner, +e.x.toFixed(4), +e.y.toFixed(4), +e.hp.toFixed(3)])) + JSON.stringify(s.players.map((p) => [p.res, p.techs, p.alive]));
 
-function live(seed, minutes) {
-  const s = createGame({ seed, players }), rec = [];
+function live(seed, minutes, peaceful) {
+  const s = createGame({ seed, players, peaceful }), rec = [];
   let r = seed; const rnd = () => ((r = (r * 1103515245 + 12345) % 2147483648) / 2147483648); // the "human", independent of the sim
   while (!s.over && s.time < minutes * 60) {
     if (s.tick % 7 === 0) {
@@ -27,17 +27,17 @@ function live(seed, minutes) {
   }
   return { s, rec };
 }
-function replay(seed, rec, ticks) {
-  const s = createGame({ seed, players }); let i = 0;
+function replay(seed, rec, ticks, peaceful) {
+  const s = createGame({ seed, players, peaceful }); let i = 0;
   while (s.tick < ticks && !s.over) { while (i < rec.length && rec[i][0] <= s.tick) { const [, pid, c] = rec[i++]; command(s, pid, c); } step(s); s.events = []; }
   return s;
 }
 let ok = true;
-for (const seed of [11, 2024, 99991]) {
-  const { s, rec } = live(seed, 12);
-  const r = replay(seed, JSON.parse(JSON.stringify(rec)), s.tick);
+for (const [seed, peaceful] of [[11, false], [2024, false], [99991, false], [7, true]]) {
+  const { s, rec } = live(seed, 12, peaceful);
+  const r = replay(seed, JSON.parse(JSON.stringify(rec)), s.tick, peaceful);
   const same = hash(s) === hash(r) && JSON.stringify(gameStats(s)) === JSON.stringify(gameStats(r));
   ok &&= same;
-  console.log(`seed ${seed}: ${rec.length} commands, ${(s.time / 60).toFixed(1)} min, techs ${Object.keys(s.players[0].techs).length}, ${same ? "replay identical" : "REPLAY DIFFERS"}`);
+  console.log(`seed ${seed}${peaceful ? " (peaceful)" : ""}: ${rec.length} commands, ${(s.time / 60).toFixed(1)} min, techs ${Object.keys(s.players[0].techs).length}, ${same ? "replay identical" : "REPLAY DIFFERS"}`);
 }
 process.exit(ok ? 0 : 1);

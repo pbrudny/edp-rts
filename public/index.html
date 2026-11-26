@@ -103,11 +103,13 @@ table.stats thead th { color: var(--muted); font-weight: 700; }
     <div class="row"><label for="name">Your name</label><input id="name" maxlength="16" placeholder="Commander"></div>
     <h2>Single player</h2>
     <div class="row">
+      <select id="mode" aria-label="Game mode"><option value="conquest" selected>Conquest</option><option value="peaceful">Peaceful</option></select>
       <select id="diff" aria-label="Difficulty"><option value="easy">Easy</option><option value="normal" selected>Normal</option><option value="hard">Hard</option></select>
       <select id="ais" aria-label="Opponents"><option value="1">1 opponent</option><option value="2">2 opponents</option><option value="3">3 opponents</option></select>
       <button class="big" id="playSingle">Play</button>
       <button id="watch" title="Computer players fight each other while you watch">Watch AI battle</button>
     </div>
+    <p id="modeHint" hidden>Peaceful: the other villages are your allies. No one attacks, you share vision, and you build for as long as you like. End the game any time to see your stats.</p>
     <h2>Multiplayer</h2>
     <div class="row">
       <button class="big" id="create">Create game</button>

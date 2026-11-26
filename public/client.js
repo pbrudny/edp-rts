@@ -99,7 +99,12 @@ const saveName = () => { try { localStorage.setItem("er-name", $("name").value.t
 let createdHere = false;
 $("watch").onclick = () => connect({ t: "watch", diff: $("diff").value, ais: $("ais").value, speed: 2 });
 $("speed").onchange = () => send({ t: "speed", speed: +$("speed").value });
-$("playSingle").onclick = () => { saveName(); connect({ t: "single", name: nameVal(), diff: $("diff").value, ais: $("ais").value }); };
+$("playSingle").onclick = () => { saveName(); connect({ t: "single", name: nameVal(), diff: $("diff").value, ais: $("ais").value, peaceful: $("mode").value === "peaceful" }); };
+$("mode").onchange = () => { // peaceful: the other players are allies, and difficulty doesn't matter
+  const p = $("mode").value === "peaceful";
+  for (const o of $("ais").options) o.textContent = `${o.value} ${p ? (o.value === "1" ? "ally" : "allies") : o.value === "1" ? "opponent" : "opponents"}`;
+  $("diff").hidden = p; $("modeHint").hidden = !p;
+};
 $("create").onclick = () => { saveName(); createdHere = true; connect({ t: "create", name: nameVal() }); };
 $("join").onclick = () => { saveName(); const c = $("joinCode").value.trim().toUpperCase(); if (c.length === 4) connect({ t: "join", code: c, name: nameVal() }); else $("err").textContent = "Enter the 4-letter code."; };
 $("joinCode").onkeydown = (e) => e.key === "Enter" && $("join").click();
@@ -107,8 +112,8 @@ $("addAI").onclick = () => send({ t: "addAI", diff: $("aiDiff").value });
 $("start").onclick = () => send({ t: "start" });
 $("leave").onclick = () => location.reload();
 $("again").onclick = () => (location.href = "/");
-let resignArm = 0;
-$("resign").onclick = () => { if (Date.now() - resignArm < 3000) cmd({ t: "resign" }); else { resignArm = Date.now(); toast("Click Resign again to confirm."); } };
+let resignArm = 0, peacefulStart = false;
+$("resign").onclick = () => { if (Date.now() - resignArm < 3000) cmd({ t: "resign" }); else { resignArm = Date.now(); toast(snap?.peaceful ? "Click End game again to finish and see your stats." : "Click Resign again to confirm."); } };
 $("mute").onclick = () => { $("mute").textContent = Sfx.toggleMute() ? "Sound off" : "Sound on"; };
 $("mute").textContent = Sfx.isMuted() ? "Sound off" : "Sound on";
 
@@ -168,7 +173,7 @@ function updateFog() {
 
 // ------------------------------------------------------------------ snapshots
 function startGame(pid) {
-  me = pid; playing = true; sel.clear();
+  me = pid; playing = true; sel.clear(); peacefulStart = true;
   for (const id of ["menu", "lobby"]) $(id).hidden = true;
   for (const id of ["top", "bottom", "mini", "help"]) $(id).hidden = false;
   if (me < 0) { for (const id of ["resign", "resbar"]) $(id).hidden = true; $("speedCtl").hidden = false; $("help").hidden = true; }
@@ -181,6 +186,7 @@ const visibleAt = (x, y) => vis && vis[Math.floor(y) * map.w + Math.floor(x)] ==
 
 function onSnap(s) {
   prev = snap; snap = s; snapAt = performance.now();
+  if (peacefulStart) { peacefulStart = false; $("resign").textContent = s.peaceful ? "End game" : "Resign"; if (s.peaceful && me >= 0) toast("Peaceful game: everyone is your ally. Build as long as you like."); }
   s.map = new Map(s.ents.map((e) => [e[0], e]));
   decodeBits(s.vis, vis);
   if (s.ex) { const ex = new Uint8Array(vis.length); decodeBits(s.ex, ex); for (let i = 0; i < ex.length; i++) if (ex[i]) explored[i] = 1; }
@@ -199,6 +205,7 @@ function onSnap(s) {
   if (s.over && !$("end").dataset.shown) {
     $("end").dataset.shown = 1;
     const won = s.winner === me;
+    if (s.peaceful) { $("end").hidden = false; $("endTitle").textContent = replayId ? "Replay over" : "Well built!"; $("endText").textContent = `A peaceful realm, ${fmtClock(s.time)} of building.`; return; }
     if (me < 0) { $("end").hidden = false; $("endTitle").textContent = replayId ? "Replay over" : "Battle over"; $("endText").textContent = `${s.winner != null ? s.players[s.winner].name + " won" : "No winner"} after ${fmtClock(s.time)}.`; return; }
     Sfx.play(won ? "victory" : "defeat");
     setTimeout(() => { $("end").hidden = false; $("endTitle").textContent = won ? "Victory" : "Defeat"; $("endText").textContent = won ? `Your realm stands alone after ${fmtClock(s.time)}.` : `${s.winner != null ? s.players[s.winner].name + " won" : "The game ended"} after ${fmtClock(s.time)}.`; }, 1500);
@@ -380,7 +387,7 @@ function rightClick(sx, sy, wx, wy) {
   const ids = units.map((u) => u[0]);
   const t = pick(sx, sy);
   const tx = Math.floor(wx), ty = Math.floor(wy);
-  if (t && t[0] !== ids[0]) { cmd({ t: "target", ids, id: t[0] }); marks.push({ x: wx, y: wy, t: performance.now(), c: t[2] >= 0 && t[2] !== me ? 0xe0674f : 0xe8b64c }); return; }
+  if (t && t[0] !== ids[0]) { cmd({ t: "target", ids, id: t[0] }); marks.push({ x: wx, y: wy, t: performance.now(), c: t[2] >= 0 && t[2] !== me && !snap.peaceful ? 0xe0674f : 0xe8b64c }); return; }
   const tree = treeAt(sx, sy, wx, wy);
   if (tree && units.some((u) => kindOf(u) === "villager")) { cmd({ t: "tree", ids, x: tree.x, y: tree.y }); marks.push({ x: tree.x + 0.5, y: tree.y + 0.5, t: performance.now(), c: 0xe8b64c }); return; }
   cmd({ t: "move", ids, x: wx, y: wy }); marks.push({ x: wx, y: wy, t: performance.now(), c: 0x6fbf73 });
@@ -412,13 +419,13 @@ function selectIdle() {
 // ------------------------------------------------------------------ HUD
 let lastCmdKey = "";
 function updateHud() {
-  $("players").innerHTML = snap.players.map((p, i) => `<span class="${p.alive ? "" : "dead"}"><b style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : ""}</span>`).join("");
+  $("players").innerHTML = snap.players.map((p, i) => `<span class="${p.alive ? "" : "dead"}"><b style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : snap.peaceful && me >= 0 ? " (ally)" : ""}</span>`).join("");
   $("clock").textContent = fmtClock(snap.time);
   const r = snap.res; if (!r) { renderInfo(selected()); return; }
   $("rFood").textContent = r.food; $("rWood").textContent = r.wood; $("rGold").textContent = r.gold;
   $("rPop").textContent = `${r.pop}/${r.cap}`; $("rPop").style.color = r.pop >= r.cap ? "var(--bad)" : "";
   $("clock").textContent = fmtClock(snap.time);
-  $("players").innerHTML = snap.players.map((p, i) => `<span class="${p.alive ? "" : "dead"}"><b style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : ""}</span>`).join("");
+  $("players").innerHTML = snap.players.map((p, i) => `<span class="${p.alive ? "" : "dead"}"><b style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : snap.peaceful && me >= 0 ? " (ally)" : ""}</span>`).join("");
   const s = selected();
   const key = s.map((e) => e[0] + ":" + (isUnitE(e) ? "" : JSON.stringify(e[8]) + e[6])).join() + "|" + r.food + r.wood + r.gold + "|" + snap.techs;
   renderInfo(s);
@@ -544,7 +551,7 @@ app.ticker.add(() => {
         if (act === 1 && fi === 3 && (kind === "swordsman" || kind === "spearman" || kind === "cavalry")) Sfx.play("clash", hearing(s) * 0.6, 260);
         if (act === 1 && kind === "ram" && fi === 4) { if (!sp.hitFrame) { sp.hitFrame = true; Sfx.play("hammer", hearing(s), 300); burst(s.x + Math.cos(e[8]) * 20, s.y - 10, 6, 0x8a7a66, 1.2, 0.7); } } else if (act === 1 && kind === "ram") sp.hitFrame = false;
       }
-      if (sel.has(e[0])) ring(s.x, s.y, 13, 6.5, e[2] === me ? 0xf3ead7 : 0xe0674f);
+      if (sel.has(e[0])) ring(s.x, s.y, 13, 6.5, e[2] === me ? 0xf3ead7 : snap.peaceful ? 0x6fbf73 : 0xe0674f);
       if (sel.has(e[0]) || e[5] < k.hp) bar(s.x - 11, s.y - 46, 22, e[5] / k.hp);
     } else {
       const c = iso(e[3] + k.w / 2, e[4] + k.h / 2);
@@ -560,7 +567,7 @@ app.ticker.add(() => {
         }
         if (kind === "house" && built >= 1 && Math.random() < 0.03 && onScreenPx(c)) spawn(c.x - 4, c.y - 62, { vx: 5, vy: -10, color: 0xcfc8c0, size: 0.7, life: 2.5, grow: 2, alpha: 0.28 }); // chimney smoke
       }
-      if (sel.has(e[0])) { const pts = [iso(e[3], e[4]), iso(e[3] + k.w, e[4]), iso(e[3] + k.w, e[4] + k.h), iso(e[3], e[4] + k.h)]; ringG.lineStyle(2, e[2] === me ? 0xf3ead7 : e[2] < 0 ? 0xe8b64c : 0xe0674f, 0.9); ringG.drawPolygon(pts.flatMap((q) => [q.x, q.y])); }
+      if (sel.has(e[0])) { const pts = [iso(e[3], e[4]), iso(e[3] + k.w, e[4]), iso(e[3] + k.w, e[4] + k.h), iso(e[3], e[4] + k.h)]; ringG.lineStyle(2, e[2] === me ? 0xf3ead7 : e[2] < 0 ? 0xe8b64c : snap.peaceful ? 0x6fbf73 : 0xe0674f, 0.9); ringG.drawPolygon(pts.flatMap((q) => [q.x, q.y])); }
       if (k.type === "building" && (sel.has(e[0]) || e[5] < k.hp * 0.999) && e[6] >= 100) bar(c.x - k.w * 14, c.y - k.h * 16 - 60, k.w * 28, e[5] / k.hp);
       if (k.type === "building" && e[6] < 100) bar(c.x - k.w * 14, c.y + 8, k.w * 28, e[6] / 100, 0xe8b64c);
       if (sel.has(e[0]) && e[2] === me && e[8] && e[8][0].length) bar(c.x - k.w * 14, c.y + 14, k.w * 28, e[8][1] / 100, 0x6fa8ff);
@@ -670,7 +677,7 @@ async function loadReplays() {
   try { list = await (await fetch("/api/replays")).json(); } catch {}
   $("replays").hidden = !list.length;
   const when = (d) => new Date(d).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  $("replayList").innerHTML = list.slice(0, 8).map((r) => `<div class="slot"><span style="flex:1">${r.players.map((p) => `<b style="background:${p.color};display:inline-block;width:9px;height:9px;border-radius:50%"></b> ${esc(p.name)}${p.name === r.winner ? " 👑" : ""}`).join(" &nbsp;")}</span><small style="color:var(--muted)">${when(r.date)} · ${r.minutes} min</small><button data-replay="${esc(r.id)}" ${r.playable ? "" : `disabled title="Recorded with an older version of the game"`}>Watch</button></div>`).join("");
+  $("replayList").innerHTML = list.slice(0, 8).map((r) => `<div class="slot"><span style="flex:1">${r.players.map((p) => `<b style="background:${p.color};display:inline-block;width:9px;height:9px;border-radius:50%"></b> ${esc(p.name)}${p.name === r.winner ? " 👑" : ""}`).join(" &nbsp;")}</span><small style="color:var(--muted)">${r.peaceful ? "peaceful · " : ""}${when(r.date)} · ${r.minutes} min</small><button data-replay="${esc(r.id)}" ${r.playable ? "" : `disabled title="Recorded with an older version of the game"`}>Watch</button></div>`).join("");
   $("replayList").querySelectorAll("[data-replay]").forEach((b) => (b.onclick = () => watchReplay(b.dataset.replay)));
 }
 const qsReplay = new URLSearchParams(location.search).get("replay");
@@ -679,7 +686,7 @@ if (qsReplay) setTimeout(() => watchReplay(qsReplay), 300); else loadReplays();
 // ------------------------------------------------------------------ end-of-game stats (table + two line charts)
 function showStats(m) {
   const P = m.players, fmt = (n) => Math.round(n).toLocaleString();
-  const rows = P.map((p, i) => `<tr><th scope="row"><b class="dot" style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : ""}</th><td>${i === m.winner ? "Winner" : p.alive ? "—" : "Defeated"}</td><td>${p.villagers}</td><td>${p.military}</td><td>${p.killed}</td><td>${p.lost}</td><td>${fmt(p.food)}</td><td>${fmt(p.wood)}</td><td>${fmt(p.gold)}</td><td>${p.techs.length}</td></tr>`).join("");
+  const rows = P.map((p, i) => `<tr><th scope="row"><b class="dot" style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : ""}</th><td>${m.peaceful ? (p.ai ? "Ally" : "Builder") : i === m.winner ? "Winner" : p.alive ? "—" : "Defeated"}</td><td>${p.villagers}</td><td>${p.military}</td><td>${p.killed}</td><td>${p.lost}</td><td>${fmt(p.food)}</td><td>${fmt(p.wood)}</td><td>${fmt(p.gold)}</td><td>${p.techs.length}</td></tr>`).join("");
   const T = m.timeline;
   const legend = `<div class="legend">${P.map((p) => `<span><b class="dot" style="background:${p.color}"></b>${esc(p.name)}</span>`).join("")}</div>`;
   $("stats").innerHTML = `
@@ -692,7 +699,7 @@ function showStats(m) {
   if ($("end").hidden) { // replay reached its end without a winner, or a spectator joined late
     $("end").hidden = false; $("end").dataset.shown = 1;
     $("endTitle").textContent = replayId ? "Replay over" : "Game over";
-    $("endText").textContent = `${m.winner != null ? P[m.winner].name + " won" : "No winner"} after ${fmtClock(m.time)}.`;
+    $("endText").textContent = m.peaceful ? `A peaceful realm, ${fmtClock(m.time)} of building.` : `${m.winner != null ? P[m.winner].name + " won" : "No winner"} after ${fmtClock(m.time)}.`;
   }
 }
 const SVG_W = 360, SVG_H = 170, PAD = { l: 38, r: 70, t: 10, b: 24 };

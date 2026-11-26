@@ -6,6 +6,10 @@ Live: https://rts.codewithpeter.com
 Gather food (berries, farms), wood (trees) and gold (mines); build houses (+5 pop), barracks, storehouses (wood/gold drop-off), farms and a workshop;
 train villagers, swordsmen, spearmen, archers, cavalry and battering rams; research upgrades. A player is defeated when all their buildings are destroyed.
 
+## Peaceful mode
+Single player option: the other villages (1-3 AIs) are allies. No one can attack anyone, vision is shared, allied AIs grow their economy
+and keep only a small guard. There is no winner: the player builds as long as they like and "End game" shows the stats screen.
+
 ## Units and counters
 Damage = attack + bonus vs the target − armour (melee) or arrow armour (archers, town centres), at least 1.
 

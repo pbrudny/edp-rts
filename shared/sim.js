@@ -137,10 +137,13 @@ function astar(s, sx, sy, isGoal, hx, hy, maxNodes = 5000) {
 
 // ------------------------------------------------------------------ world creation
 
-export function createGame({ seed = Date.now() % 1e9, players }) {
+// peaceful = everyone is allied: nobody can attack anyone, vision is shared, the game ends when the human players leave
+export const enemies = (s, a, b) => a >= 0 && b >= 0 && a !== b && !s.peaceful;
+
+export function createGame({ seed = Date.now() % 1e9, players, peaceful = false }) {
   const R = rng(seed);
   const s = {
-    seed, rand: rng(seed ^ 0x5bd1e995), w: MAP, h: MAP, tick: 0, time: 0, nextId: 1, over: false, winner: null, timeline: [],
+    seed, peaceful: !!peaceful, rand: rng(seed ^ 0x5bd1e995), w: MAP, h: MAP, tick: 0, time: 0, nextId: 1, over: false, winner: null, timeline: [],
     tile: new Uint8Array(MAP * MAP), wood: new Float32Array(MAP * MAP), occ: new Int32Array(MAP * MAP),
     ents: new Map(), events: [], fx: [], treeChanges: [],
     players: players.map((p, i) => ({ id: i, name: p.name, color: COLORS[i], ai: p.ai ? { diff: p.ai, think: 0, wave: 0 } : null,
@@ -212,7 +215,7 @@ export function command(s, pid, c) {
     case "target": {
       const t = s.ents.get(c.id); if (!t) return;
       for (const u of units) {
-        if (t.owner !== pid && t.owner >= 0 && !(KINDS[u.kind].siege && isUnit(t))) setOrder(u, { type: "attack", id: t.id });
+        if (enemies(s, pid, t.owner) && !(KINDS[u.kind].siege && isUnit(t))) setOrder(u, { type: "attack", id: t.id });
         else if (u.kind === "villager" && isBuilding(t) && t.owner === pid && t.built < 1) setOrder(u, { type: "build", id: t.id });
         else if (u.kind === "villager" && (isResource(t) || (t.kind === "farm" && t.owner === pid))) setOrder(u, { type: "gather", id: t.id });
         else if (u.kind === "villager" && isBuilding(t) && t.owner === pid && u.carry) setOrder(u, { type: "return", drop: t.id });
@@ -308,7 +311,9 @@ export function step(s) {
   }
   for (const p of s.players) if (p.alive && ![...s.ents.values()].some((e) => e.owner === p.id && isBuilding(e))) defeat(s, p.id, "no buildings left");
   const alive = s.players.filter((p) => p.alive);
-  if (alive.length <= 1 && s.players.length > 1) {
+  if (s.peaceful) { // no winner: over once every human has left or ended the game
+    if (!s.players.some((p) => p.alive && !p.ai)) { s.over = true; s.winner = null; sample(s); s.events.push({ type: "game_over", winner: null, minutes: +(s.time / 60).toFixed(1) }); }
+  } else if (alive.length <= 1 && s.players.length > 1) {
     s.over = true; s.winner = alive[0]?.id ?? null; sample(s);
     s.events.push({ type: "game_over", winner: alive[0]?.name ?? null, minutes: +(s.time / 60).toFixed(1) });
   }
@@ -321,7 +326,7 @@ function sample(s) {
   s.timeline.push({ t: Math.round(s.time), p: s.players.map((p, i) => [n[i][0], n[i][1], p.stats.food, p.stats.wood, p.stats.gold]) });
 }
 export function gameStats(s) {
-  return { time: Math.round(s.time), winner: s.winner, players: s.players.map((p) => ({ name: p.name, color: p.color, ai: p.ai?.diff ?? null, alive: p.alive, ...p.stats, techs: Object.keys(p.techs) })), timeline: s.timeline };
+  return { time: Math.round(s.time), winner: s.winner, peaceful: s.peaceful, players: s.players.map((p) => ({ name: p.name, color: p.color, ai: p.ai?.diff ?? null, alive: p.alive, ...p.stats, techs: Object.keys(p.techs) })), timeline: s.timeline };
 }
 
 function defeat(s, pid, reason) {
@@ -366,7 +371,7 @@ function updateBuilding(s, b, pops) {
 function nearestEnemy(s, owner, x, y, range, unitsOnly = false, buildingsOnly = false) {
   let best = null, bd = range;
   for (const e of s.ents.values()) {
-    if (e.owner < 0 || e.owner === owner || e.hp <= 0 || !s.players[e.owner]?.alive) continue;
+    if (!enemies(s, owner, e.owner) || e.hp <= 0 || !s.players[e.owner]?.alive) continue;
     if ((unitsOnly && !isUnit(e)) || (buildingsOnly && isUnit(e))) continue;
     let d = isUnit(e) ? Math.hypot(e.x - x, e.y - y) : distToRect(x, y, e) + 1.5; // prefer units over buildings
     if (d < bd) { bd = d; best = e; }
@@ -472,7 +477,7 @@ function updateUnit(s, u) {
       break;
     case "attack": {
       const t = s.ents.get(ord.id);
-      if (!t || t.hp <= 0 || (k.siege && isUnit(t)) || (u.kind !== "villager" && ord.auto && distTo(u, t) > k.sight + 3)) { u.order = u.prev ?? null; u.prev = null; u.path = null; break; }
+      if (!t || t.hp <= 0 || (k.siege && isUnit(t)) || !enemies(s, u.owner, t.owner) || (u.kind !== "villager" && ord.auto && distTo(u, t) > k.sight + 3)) { u.order = u.prev ?? null; u.prev = null; u.path = null; break; }
       const goal = isUnit(t) ? { x: t.x, y: t.y, moving: true } : { rect: t };
       if (approach(s, u, goal, range)) {
         u.anim = "attack"; u.face = Math.atan2(centre(t).y - u.y, centre(t).x - u.x);
@@ -604,7 +609,7 @@ function runAI(s, p) {
     if (tech && Object.entries(TECHS[tech].cost).every(([r, v]) => p.res[r] >= v + reserve)) command(s, p.id, { t: "train", id: b.id, kind: tech });
   }
   // economy
-  if (tc && tc.queue.length === 0 && vills.length < (ai.diff === "easy" ? 12 : 18) && pop < cap) command(s, p.id, { t: "train", id: tc.id, kind: "villager" });
+  if (tc && tc.queue.length === 0 && vills.length < (s.peaceful ? 25 : ai.diff === "easy" ? 12 : 18) && pop < cap) command(s, p.id, { t: "train", id: tc.id, kind: "villager" });
   const building = (kind) => has(kind, true).some((e) => e.built < 1);
   if (cap - pop <= 2 && cap < MAX_POP && !building("house")) build("house");
   else if (vills.length >= 7 && !has("barracks", true).length) build("barracks");
@@ -636,13 +641,13 @@ function runAI(s, p) {
     const r = s.rand(); return r < 0.3 ? "swordsman" : r < 0.55 ? "archer" : r < 0.8 ? "cavalry" : "spearman";
   };
   for (const b of has("barracks")) { // save up for the chosen unit instead of falling back to the cheapest one
-    if (b.queue.length >= 2 || pop >= cap) continue;
+    if (b.queue.length >= 2 || pop >= cap || (s.peaceful && army.length >= 6)) continue; // peaceful allies keep a small guard
     ai.want ??= pickUnit();
     if (afford(p, KINDS[ai.want].cost)) { command(s, p.id, { t: "train", id: b.id, kind: ai.want }); ai.want = null; }
   }
   const rams = army.filter((e) => e.kind === "ram").length;
   for (const b of has("workshop"))
-    if (!b.queue.length && pop < cap && army.length >= 6 && rams < 1 + Math.min(2, ai.wave) && afford(p, KINDS.ram.cost)) command(s, p.id, { t: "train", id: b.id, kind: "ram" });
+    if (!s.peaceful && !b.queue.length && pop < cap && army.length >= 6 && rams < 1 + Math.min(2, ai.wave) && afford(p, KINDS.ram.cost)) command(s, p.id, { t: "train", id: b.id, kind: "ram" });
 
   // defend base
   const threat = nearestEnemy(s, p.id, bx, by, 14);
@@ -653,10 +658,10 @@ function runAI(s, p) {
   // attack waves
   const need = D.wave + ai.wave * 2;
   if (army.length >= need) {
-    const enemies = [...s.ents.values()].filter((e) => e.owner >= 0 && e.owner !== p.id && s.players[e.owner].alive && isBuilding(e));
-    if (enemies.length) {
-      enemies.sort((a, b) => Math.hypot(a.x - bx, a.y - by) - Math.hypot(b.x - bx, b.y - by));
-      const t = enemies[0];
+    const foes = [...s.ents.values()].filter((e) => enemies(s, p.id, e.owner) && s.players[e.owner].alive && isBuilding(e));
+    if (foes.length) {
+      foes.sort((a, b) => Math.hypot(a.x - bx, a.y - by) - Math.hypot(b.x - bx, b.y - by));
+      const t = foes[0];
       command(s, p.id, { t: "attackMove", ids: army.map((a) => a.id), x: t.x + t.w / 2, y: t.y + t.h / 2 });
       ai.wave++;
       s.events.push({ type: "attack_launched", player: p.name, units: army.length });
@@ -685,7 +690,7 @@ export function visibility(s, pid) {
   const p = s.players[pid];
   if (!p || !p.alive || s.over) { vis.fill(1); ex.fill(1); return { vis, ex }; } // defeated players and finished games see everything
   for (const e of s.ents.values()) {
-    if (e.owner !== pid) continue;
+    if (e.owner < 0 || (e.owner !== pid && !s.peaceful)) continue; // allies share vision
     if (isUnit(e)) reveal(e.x, e.y, KINDS[e.kind].sight);
     else if (isBuilding(e)) reveal(e.x + e.w / 2, e.y + e.h / 2, (BUILD_SIGHT[e.kind] ?? 4) + Math.max(e.w, e.h) / 2);
   }
@@ -717,7 +722,7 @@ export function snapshot(s, pid) {
   }
   const me = s.players[pid];
   return {
-    t: "s", tick: s.tick, time: Math.round(s.time),
+    t: "s", tick: s.tick, time: Math.round(s.time), peaceful: s.peaceful,
     me: pid, techs: me ? Object.keys(me.techs) : [], res: me ? { food: Math.floor(me.res.food), wood: Math.floor(me.res.wood), gold: Math.floor(me.res.gold), ...popOf(s, pid) } : null,
     players: s.players.map((p) => ({ name: p.name, color: p.color, alive: p.alive, ai: p.ai?.diff ?? null })),
     ents, fx: s.fx.filter((f) => seen(f[0], f[1]) || seen(f[2], f[3])), trees: s.treeChanges, over: s.over, winner: s.winner,
