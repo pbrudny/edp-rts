@@ -96,7 +96,7 @@ async function save(name, frames) {
 const post = (name, body) => fetch(`/save/${name}`, { method: "POST", body });
 
 // ------------------------------------------------------------------ jobs
-const UNITS = { villager: ["idle", "walk", "attack", "work", "death"], swordsman: ["idle", "walk", "attack", "death"], archer: ["idle", "walk", "attack", "death"], spearman: ["idle", "walk", "attack", "death"], cavalry: ["idle", "walk", "attack", "death"], ram: ["idle", "walk", "attack", "death"] };
+const UNITS = { villager: ["idle", "walk", "attack", "work", "death"], swordsman: ["idle", "walk", "attack", "death"], archer: ["idle", "walk", "attack", "death"], spearman: ["idle", "walk", "attack", "death"], cavalry: ["idle", "walk", "attack", "death"], knight: ["idle", "walk", "attack", "death"], crossbowman: ["idle", "walk", "attack", "death"], ram: ["idle", "walk", "attack", "death"] };
 const FRAMES = { idle: 1, walk: 8, attack: 6, work: 6, death: 6 };
 const unitFrames = {};
 for (const [kind, anims] of Object.entries(UNITS)) {
@@ -112,9 +112,12 @@ for (const [kind, anims] of Object.entries(UNITS)) {
 await save("units", unitFrames);
 
 const objFrames = {};
-for (const [kind, w] of [["house", 2], ["tc", 3], ["barracks", 3], ["storehouse", 2], ["farm", 2], ["workshop", 3]]) {
+for (const [kind, w] of [["house", 2], ["tc", 3], ["barracks", 3], ["storehouse", 2], ["farm", 2], ["workshop", 3], ["market", 3]]) {
   const o = M.makeBuilding(kind); objFrames[kind] = shoot(o, 520, 560, 260, 400);
 }
+objFrames.tower = shoot(M.makeBuilding("tower"), 400, 640, 200, 500);
+for (const kind of ["wall", "gate"]) objFrames[kind] = shoot(M.makeBuilding(kind), 240, 300, 120, 200);
+objFrames.found1 = shoot(M.makeFoundation(1, 1), 240, 260, 120, 180);
 objFrames.found2 = shoot(M.makeFoundation(2, 2), 400, 360, 200, 240);
 objFrames.found3 = shoot(M.makeFoundation(3, 3), 520, 440, 260, 300);
 for (let v = 0; v < 8; v++) objFrames[`tree${v}`] = shoot(M.makeTree(v), 220, 260, 110, 210);

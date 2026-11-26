@@ -33,7 +33,7 @@ when they are the last team standing; a defeated player keeps watching their tea
 Chat and pings are not part of replays.
 
 ## Units and counters
-Damage = attack + bonus vs the target − armour (melee) or arrow armour (archers, town centres), at least 1.
+Damage = attack + bonus vs the target − armour (melee) or arrow armour (archers, crossbowmen, towers, town centres), at least 1.
 
 | Unit | Trained at | Strong against | Weak against |
 |------|-----------|----------------|--------------|
@@ -41,7 +41,28 @@ Damage = attack + bonus vs the target − armour (melee) or arrow armour (archer
 | Spearman | Barracks | cavalry, rams | archers, swordsmen |
 | Archer | Barracks | spearmen | cavalry |
 | Cavalry | Barracks | archers, rams | spearmen |
+| Knight (Castle Age) | Barracks | archers, crossbowmen, rams | spearmen |
+| Crossbowman (Castle Age) | Barracks | spearmen | cavalry, knights |
 | Battering ram | Workshop | buildings only (arrows barely hurt it) | any melee unit |
+
+## Ages
+Everyone starts in the Village Age. "Advance to Castle Age" at the Town Centre (400 food, 200 gold, 50 s; needs a finished Barracks
+and Storehouse) unlocks the Workshop (rams, upgrades), Tower, Market, Knight and Crossbowman. The AI saves up for it once it has
+a small guard. In the sim: `TECHS.castle`, `ageOf(techs)`, `unlocked(s, pid, item)`; `age: 2` on a kind marks it Castle Age.
+
+## Walls, gates, towers
+- Wall: press Build Wall, then press and drag on the map. A line of up to 24 one-tile pieces (8 wood each) that the selected villagers
+  build one after another (`{t:"wall", x, y, x2, y2}`). Diagonal lines still block (no corner cutting).
+- Gate: 1 tile; your own and allied units walk through, enemies can't. Placing a gate on one of your wall pieces swaps it in.
+- Walls and gates have 10 arrow armour (arrows barely scratch them) and don't keep a player alive.
+- Breaching: soldiers path *through* enemy walls/gates at a high cost (`passCost`, `BREACH = 14`). When a wall piece is the next step,
+  they attack it and then carry on, so a long detour around a wall gets cut short, while a gap or gate nearby is still preferred.
+- Tower (Castle Age, 2x2, 100 wood + 100 gold): shoots enemy units within 7 tiles; Fletching improves it.
+
+## Market (Castle Age)
+Buy or sell 100 food or wood for gold. Each player has their own prices: start at 100 gold, +6 per buy, -6 per sell (30-300),
+and selling pays 75%. With allies, the market can also send 100 food/wood/gold to them (20% is lost on the way). The AI sells big
+surpluses and buys what it is short of.
 
 ## Upgrades (researched once, in a building's queue)
 Workshop: Forging (+2 melee attack), Fletching (+1 attack/range for archers and town centres), Chain mail (+1 armour/arrow armour for soldiers).
@@ -70,7 +91,7 @@ Ctrl+1-9 / 1-9 control groups · Enter chat · G or Alt+click ping · arrows/scr
 
 ## Run / test
 - Deploy: `/root/edp-rts` on steve107, `docker compose up -d --build` (clean env; `.env` has `EDP_BROKER_DEMO_PASSWORD`).
-- `node test-sim.mjs normal normal` runs a headless AI-vs-AI game. `node test-replay.mjs` checks that recorded games replay identically (run it after any change to `shared/sim.js`). `test-bot.mjs` (run inside the container) plays scripted single-player and multiplayer sessions against a URL.
+- `node test-sim.mjs normal normal` runs a headless AI-vs-AI game. `node test-walls.mjs` checks walls, gates, breaching, ages and the market. `node test-replay.mjs` checks that recorded games replay identically (run it after any change to `shared/sim.js`). `test-bot.mjs` (run inside the container) plays scripted single-player and multiplayer sessions against a URL.
 
 ## Graphics (v2, 13.11)
 - Renderer: PixiJS 7.4.2 (WebGL, self-hosted in `public/vendor`), isometric 2:1 view. Ground = top-down noise texture (`public/art.js`) re-projected with a matrix; fog of war = 80x80 alpha canvas projected the same way (soft edges for free).

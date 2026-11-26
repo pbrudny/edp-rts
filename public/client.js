@@ -1,5 +1,5 @@
 // Ember Realms client: PixiJS (WebGL) isometric renderer + HUD + input. Server is authoritative.
-import { KINDS, COLORS, TECHS, BUILDABLE, stat, costOf, timeOf } from "/shared/sim.js";
+import { KINDS, COLORS, TECHS, BUILDABLE, AGES, MARKET, ageOf, line, stat, costOf, timeOf } from "/shared/sim.js";
 import * as Art from "/art.js";
 import * as Sfx from "/sfx.js";
 
@@ -7,10 +7,12 @@ const PIXI = window.PIXI;
 const $ = (id) => document.getElementById(id);
 const HW = 32, HH = 16; // half tile width/height in screen px (64 x 32 diamond)
 const iso = (x, y) => ({ x: (x - y) * HW, y: (x + y) * HH });
-const NAMES = { villager: "Villager", swordsman: "Swordsman", spearman: "Spearman", archer: "Archer", cavalry: "Cavalry", ram: "Battering ram", tc: "Town Centre", house: "House", barracks: "Barracks", storehouse: "Storehouse", farm: "Farm", workshop: "Workshop", gold: "Gold mine", berries: "Berry bush" };
+const NAMES = { villager: "Villager", swordsman: "Swordsman", spearman: "Spearman", archer: "Archer", cavalry: "Cavalry", knight: "Knight", crossbowman: "Crossbowman", ram: "Battering ram", market: "Market", wall: "Wall", gate: "Gate", tower: "Tower", tc: "Town Centre", house: "House", barracks: "Barracks", storehouse: "Storehouse", farm: "Farm", workshop: "Workshop", gold: "Gold mine", berries: "Berry bush" };
 for (const [id, t] of Object.entries(TECHS)) NAMES[id] = t.name;
-const TIPS = { swordsman: "All-rounder. Strong against spearmen and buildings.", spearman: "Cheap. Strong against cavalry.", archer: "Ranged. Strong against spearmen.", cavalry: "Fast and tough. Strong against archers and rams.", ram: "Only attacks buildings, but hits them very hard. Arrows barely hurt it; kill it in melee.", villager: "Gathers resources and builds." };
-const HOTKEYS = ["q", "w", "e", "r", "t", "y"];
+const TIPS = { swordsman: "All-rounder. Strong against spearmen and buildings.", spearman: "Cheap. Strong against cavalry.", archer: "Ranged. Strong against spearmen.", cavalry: "Fast and tough. Strong against archers and rams.", ram: "Only attacks buildings, but hits them very hard. Arrows barely hurt it; kill it in melee.", villager: "Gathers resources and builds.", knight: "Heavy cavalry. Strong against archers, crossbowmen and rams; weak against spearmen.", crossbowman: "Ranged, tougher than archers. Strong against spearmen.",
+  wall: "Drag to draw a line of wall. Arrows barely scratch it; rams and swordsmen break it.", gate: "Your units and allies walk through, enemies can't. Place it on one of your wall pieces to swap it in.",
+  tower: "Shoots arrows at enemy units in range.", market: "Buy and sell food and wood for gold, and send resources to allies." };
+const HOTKEYS = ["q", "w", "e", "r", "t", "y", "u", "i", "o"];
 const TINT = COLORS.map((c) => parseInt(c.slice(1), 16));
 
 // ------------------------------------------------------------------ PIXI setup
@@ -291,6 +293,7 @@ function onSnap(s) {
   prev = snap; snap = s; snapAt = performance.now();
   if (peacefulStart) { peacefulStart = false; $("resign").textContent = s.peaceful ? "End game" : "Resign"; if (s.peaceful && me >= 0) toast("Peaceful game: everyone is your ally. Build as long as you like."); }
   s.map = new Map(s.ents.map((e) => [e[0], e]));
+  if (prev && me >= 0 && s.techs.includes("castle") && !prev.techs.includes("castle")) { Sfx.play("victory", 0.6); toast("Castle Age! Workshop, Tower, Market, Knight and Crossbowman are unlocked."); }
   decodeBits(s.vis, vis);
   if (s.ex) { const ex = new Uint8Array(vis.length); decodeBits(s.ex, ex); for (let i = 0; i < ex.length; i++) if (ex[i]) explored[i] = 1; }
   updateFog();
@@ -402,11 +405,19 @@ function canPlaceClient(kind, x, y) {
     const tx = x + i, ty = y + j;
     if (tx < 0 || ty < 0 || tx >= map.w || ty >= map.h) return false;
     const n = ty * map.w + tx;
-    if (map.tile[n] === 1 || map.wood[n] || occ[n] || !explored[n]) return false;
+    const ownWall = kind === "gate" && occ[n] && ent(occ[n])?.[2] === me && kindOf(ent(occ[n])) === "wall";
+    if (map.tile[n] === 1 || map.wood[n] || (occ[n] && !ownWall) || !explored[n]) return false;
   }
   return true;
 }
 const selected = () => [...sel].map(ent).filter(Boolean);
+const myAge = () => ageOf(Object.fromEntries((snap?.techs ?? []).map((t) => [t, 1])));
+function lockReason(item) { // why this can't be started yet (age or required buildings), or "" if it can
+  const need = (KINDS[item] ?? TECHS[item]).age ?? 1;
+  if (need > myAge()) return `needs ${AGES[need]}`;
+  const missing = (TECHS[item]?.needs ?? []).filter((k) => !snap.ents.some((e) => e[2] === me && kindOf(e) === k && e[6] >= 100));
+  return missing.length ? `needs ${missing.map((k) => NAMES[k]).join(" and ")}` : "";
+}
 const myUnits = () => selected().filter((e) => e[2] === me && isUnitE(e));
 
 // ------------------------------------------------------------------ input
@@ -430,6 +441,7 @@ view.addEventListener("mousedown", (e) => {
   if (e.button === 0 && e.altKey) { ping(w.x, w.y); return; } // Alt+click = ping for allies
   if (e.button === 1) { e.preventDefault(); drag = { pan: true, x1: e.clientX, y1: e.clientY, cx: cam.x, cy: cam.y }; return; }
   if (e.button !== 0) return;
+  if (mode?.build === "wall") { mode.from = { x: Math.floor(w.x), y: Math.floor(w.y) }; return; } // drag to the end of the wall
   if (mode?.build) {
     const k = KINDS[mode.build], x = Math.floor(w.x - k.w / 2 + 0.5), y = Math.floor(w.y - k.h / 2 + 0.5);
     if (!canPlaceClient(mode.build, x, y)) return toast("Can't build there.");
@@ -443,7 +455,16 @@ view.addEventListener("mousedown", (e) => {
   drag = { x1: e.clientX, y1: e.clientY, x2: e.clientX, y2: e.clientY, shift: e.shiftKey };
 });
 addEventListener("mousemove", (e) => { if (drag?.pan) { cam.x = drag.cx - (e.clientX - drag.x1) / cam.z; cam.y = drag.cy - (e.clientY - drag.y1) / cam.z; } });
+const wallLine = () => { const w = screenToWorld(mouse.x, mouse.y), a = mode.from ?? { x: Math.floor(w.x), y: Math.floor(w.y) }; return line(a.x, a.y, Math.floor(w.x), Math.floor(w.y)).slice(0, 24); };
 addEventListener("mouseup", (e) => {
+  if (mode?.build === "wall" && mode.from && e.button === 0) {
+    const pts = wallLine(), [x2, y2] = pts.at(-1), free = pts.filter(([x, y]) => canPlaceClient("wall", x, y)).length;
+    if (!free) toast("Can't build a wall there.");
+    else if (!canAfford(KINDS.wall.cost)) toast(`Not enough wood (${KINDS.wall.cost.wood} per piece).`);
+    else { cmd({ t: "wall", ids: myUnits().filter((u) => kindOf(u) === "villager").map((u) => u[0]), x: mode.from.x, y: mode.from.y, x2, y2 }); Sfx.play("hammer", 0.7); }
+    mode = e.shiftKey ? { build: "wall" } : null;
+    return;
+  }
   if (!drag) return;
   if (drag.pan) { drag = null; return; }
   if (e.button !== 0) return;
@@ -532,6 +553,7 @@ function selectIdle() {
 let lastCmdKey = "";
 function updateHud() {
   $("clock").textContent = fmtClock(snap.time);
+  $("age").textContent = me >= 0 ? AGES[myAge()] : "";
   const r = snap.res; if (!r) { renderInfo(selected()); return; }
   $("rFood").textContent = r.food; $("rWood").textContent = r.wood; $("rGold").textContent = r.gold;
   $("rPop").textContent = `${r.pop}/${r.cap}`; $("rPop").style.color = r.pop >= r.cap ? "var(--bad)" : "";
@@ -539,7 +561,7 @@ function updateHud() {
   $("players").innerHTML = snap.players.map((p, i) => `<span class="${p.alive ? "" : "dead"}"><b style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : me >= 0 && ally(i, me) ? " (ally)" : ""}${teamGame() && !snap.peaceful ? ` <small style="color:var(--muted)">T${p.team + 1}</small>` : ""}</span>`).join("");
   renderGroups();
   const s = selected();
-  const key = s.map((e) => e[0] + ":" + (isUnitE(e) ? "" : JSON.stringify(e[8]) + e[6])).join() + "|" + r.food + r.wood + r.gold + "|" + snap.techs;
+  const key = s.map((e) => e[0] + ":" + (isUnitE(e) ? "" : JSON.stringify(e[8]) + e[6])).join() + "|" + r.food + r.wood + r.gold + "|" + snap.techs + JSON.stringify(snap.market);
   renderInfo(s);
   if (key !== lastCmdKey) { lastCmdKey = key; renderCmds(); }
 }
@@ -576,7 +598,11 @@ function renderCmds() {
   };
   const units = s.filter(isUnitE);
   if (units.length) {
-    if (units.some((u) => kindOf(u) === "villager")) BUILDABLE.forEach((kind, i) => add(`Build ${NAMES[kind]}`, costText(KINDS[kind].cost), HOTKEYS[i], () => { mode = { build: kind }; }, canAfford(KINDS[kind].cost)));
+    if (units.some((u) => kindOf(u) === "villager")) BUILDABLE.forEach((kind, i) => {
+      const lock = lockReason(kind);
+      add(`Build ${NAMES[kind]}`, lock || costText(KINDS[kind].cost) + (kind === "wall" ? " each" : ""), HOTKEYS[i], () => { mode = { build: kind }; if (kind === "wall") toast("Press and drag to draw the wall."); }, !lock && canAfford(KINDS[kind].cost));
+      box.lastChild.title = TIPS[kind] ?? "";
+    });
     if (units.some((u) => kindOf(u) !== "villager")) add("Attack-move", "attack anything on the way", "a", () => { mode = { attackMove: true }; });
     add("Stop", "cancel orders", "s", () => cmd({ t: "stop", ids: units.map((u) => u[0]) }));
     return;
@@ -588,14 +614,28 @@ function renderCmds() {
   const items = [...(kb.trains ?? []), ...(kb.researches ?? []).filter((t) => !snap.techs.includes(t))];
   items.forEach((u, i) => {
     const tech = !!TECHS[u], busy = tech && queued.has(u);
-    add(`${tech ? "Research" : "Train"} ${NAMES[u]}`, busy ? "researching…" : `${costText(costOf(u))} · ${timeOf(u)}s`, HOTKEYS[i], () => {
+    const lock = lockReason(u);
+    add(u === "castle" ? "Advance to Castle Age" : `${tech ? "Research" : "Train"} ${NAMES[u]}`, busy ? "researching…" : lock ? `${costText(costOf(u))} · ${lock}` : `${costText(costOf(u))} · ${timeOf(u)}s`, HOTKEYS[i], () => {
       if (!canAfford(costOf(u))) return toast(`Not enough resources (${costText(costOf(u))}).`);
       cmd({ t: "train", id: b[0], kind: u });
-    }, canAfford(costOf(u)) && !busy);
+    }, canAfford(costOf(u)) && !busy && !lock);
     box.lastChild.title = tech ? TECHS[u].desc : TIPS[u] ?? "";
   });
   const done = (kb.researches ?? []).filter((t) => snap.techs.includes(t));
   if (done.length) { const n = document.createElement("small"); n.style.cssText = "color:var(--muted);width:100%"; n.textContent = "Researched: " + done.map((t) => NAMES[t]).join(", "); box.append(n); }
+  if (kind === "market") { // trade buttons + sending resources to allies
+    const mk = snap.market ?? { food: MARKET.start, wood: MARKET.start };
+    ["food", "wood"].forEach((r, i) => {
+      add(`Buy 100 ${r}`, `${mk[r]} gold`, HOTKEYS[i * 2], () => cmd({ t: "trade", id: b[0], res: r, buy: true }), snap.res.gold >= mk[r]);
+      add(`Sell 100 ${r}`, `+${Math.floor(mk[r] * MARKET.sellCut)} gold`, HOTKEYS[i * 2 + 1], () => cmd({ t: "trade", id: b[0], res: r, buy: false }), snap.res[r] >= 100);
+    });
+    const mates = snap.players.map((p, i) => ({ p, i })).filter(({ p, i }) => i !== me && p.alive && ally(i, me));
+    for (const { p, i } of mates) {
+      const row = document.createElement("div"); row.className = "queue"; row.innerHTML = `<small style="color:var(--muted)">Send 100 to <b class="dot" style="background:${p.color}"></b>${esc(p.name)} (${Math.round(MARKET.tributeCut * 100)}% lost):</small>`;
+      for (const r of ["food", "wood", "gold"]) { const bt = document.createElement("button"); bt.textContent = r; bt.disabled = snap.res[r] < 100; bt.onclick = () => { cmd({ t: "tribute", id: b[0], to: i, res: r }); toast(`Sent 100 ${r} to ${p.name}.`); }; row.append(bt); }
+      box.append(row);
+    }
+  }
   if (b[8]) {
     const [q, p] = b[8];
     const row = document.createElement("div"); row.className = "queue";
@@ -645,7 +685,7 @@ app.ticker.add(() => {
       const act = e[7], d = dirOf(e[8]);
       let anim = "idle", n = 1, fps = 1;
       if (act === 4) { anim = "walk"; n = 8; fps = 11; }
-      else if (act === 1) { anim = "attack"; n = 6; fps = kind === "archer" || kind === "ram" ? 4 : 6; }
+      else if (act === 1) { anim = "attack"; n = 6; fps = kind === "archer" || kind === "crossbowman" || kind === "ram" ? 4 : 6; }
       else if (act === 2 || act === 3) { anim = kind === "villager" ? "work" : "attack"; n = 6; fps = 7; }
       const fi = Math.floor(t * fps + e[0] * 0.37) % n;
       setFrame(sp, `${kind}_${anim}_${d}_${fi}`, tint);
@@ -660,7 +700,7 @@ app.ticker.add(() => {
             else if (nearTree(p)) { burst(hx, hy, 4, 0x8a5a30, 0.5, 0.6); Sfx.play("chop", hearing(s) * 0.6, 200); }
           }
         } else sp.hitFrame = false;
-        if (act === 1 && fi === 3 && (kind === "swordsman" || kind === "spearman" || kind === "cavalry")) Sfx.play("clash", hearing(s) * 0.6, 260);
+        if (act === 1 && fi === 3 && (kind === "swordsman" || kind === "spearman" || kind === "cavalry" || kind === "knight")) Sfx.play("clash", hearing(s) * 0.6, 260);
         if (act === 1 && kind === "ram" && fi === 4) { if (!sp.hitFrame) { sp.hitFrame = true; Sfx.play("hammer", hearing(s), 300); burst(s.x + Math.cos(e[8]) * 20, s.y - 10, 6, 0x8a7a66, 1.2, 0.7); } } else if (act === 1 && kind === "ram") sp.hitFrame = false;
       }
       if (sel.has(e[0])) ring(s.x, s.y, 13, 6.5, e[2] === me ? 0xf3ead7 : ally(e[2], me) ? 0x6fbf73 : 0xe0674f);
@@ -670,7 +710,7 @@ app.ticker.add(() => {
       if (k.type === "resource") setFrame(sp, `${kind}${e[0] % 3}`);
       else {
         const built = e[6] / 100;
-        if (built < 1 && kind !== "farm") { if (built > 0.5) { setFrame(sp, kind, tint); sp.alpha = 0.45 + built * 0.4; } else { setFrame(sp, k.w === 3 ? "found3" : "found2", tint); sp.alpha = 1; } }
+        if (built < 1 && kind !== "farm") { if (built > 0.5) { setFrame(sp, kind, tint); sp.alpha = 0.45 + built * 0.4; } else { setFrame(sp, k.w === 3 ? "found3" : k.w === 1 ? "found1" : "found2", tint); sp.alpha = 1; } }
         else { setFrame(sp, kind, tint); sp.alpha = built < 1 ? 0.6 : 1; }
         if (built >= 1 && e[5] < k.hp * 0.5 && onScreenPx(c)) { // burning
           const fire = 1 - e[5] / (k.hp * 0.5);
@@ -736,6 +776,13 @@ function scroll() {
   cam.x = Math.max(minX, Math.min(maxX, cam.x)); cam.y = Math.max(-200, Math.min(maxY, cam.y));
 }
 function drawGhost() {
+  if (mode.build === "wall") { // the whole line, green where a piece fits
+    if (ghostSprite) ghostSprite.visible = false;
+    const pts = wallLine(); let n = 0;
+    for (const [x, y] of pts) { const ok = canPlaceClient("wall", x, y), col = ok ? 0x6fbf73 : 0xe0674f; n += ok; const q = [iso(x, y), iso(x + 1, y), iso(x + 1, y + 1), iso(x, y + 1)]; ghostG.lineStyle(1, col, 0.8); ghostG.beginFill(col, 0.3); ghostG.drawPolygon(q.flatMap((p) => [p.x, p.y])); ghostG.endFill(); }
+    $("toast").textContent = `Wall: ${n} pieces, ${n * KINDS.wall.cost.wood} wood${mode.from ? "" : " · press and drag"}`; $("toast").classList.add("on"); clearTimeout(toast.h); toast.h = setTimeout(() => $("toast").classList.remove("on"), 300);
+    return;
+  }
   const w = screenToWorld(mouse.x, mouse.y), k = KINDS[mode.build];
   const x = Math.floor(w.x - k.w / 2 + 0.5), y = Math.floor(w.y - k.h / 2 + 0.5);
   const ok = canPlaceClient(mode.build, x, y), col = ok ? 0x6fbf73 : 0xe0674f;
@@ -878,4 +925,4 @@ function hoverChart(fig) { // crosshair + tooltip with every player's value at t
 if (location.hash.startsWith("#autoplay")) setTimeout(() => $("playSingle").click(), 300);
 if (location.hash.startsWith("#autowatch")) setTimeout(() => connect({ t: "watch", diff: "hard", ais: 1, speed: 8 }), 300);
 // test hooks for headless screenshots
-window.__er = { look: (x, y) => lookAt(iso(x, y)), toScreen: (x, y) => worldToScreen(x, y), wood: (i) => map.wood[i], w: () => map.w, snap: () => snap, kinds: () => kinds, zoom: (z) => (cam.z = z) };
+window.__er = { cmd: (c) => cmd(c), look: (x, y) => lookAt(iso(x, y)), toScreen: (x, y) => worldToScreen(x, y), wood: (i) => map.wood[i], w: () => map.w, snap: () => snap, kinds: () => kinds, zoom: (z) => (cam.z = z) };

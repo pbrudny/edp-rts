@@ -73,6 +73,18 @@ export function makeUnit(kind) {
     bow.rotation.y = Math.PI / 2; bow.position.set(0.02, 0, 0); h.P.handL.add(bow); h.P.tool = bow;
     return h;
   }
+  if (kind === "crossbowman") {
+    const h = humanoid({ tunic: TEAM, legs: 0x4a4a52, boots: 0x2e2a26 });
+    h.P.torso.add(at(box(0.17, 0.2, 0.26, 0x9a8a6a), 0, 0.2, 0)); // padded jacket
+    const hat = new THREE.Group(); hat.add(at(sph(0.093, 0x9aa1aa, false, 10, 5), 0, 0.075, 0)); hat.add(at(cyl(0.15, 0.15, 0.02, 0x8a919a, 12), 0, 0.05, 0)); h.P.head.add(hat); // kettle hat
+    h.P.torso.add(at(box(0.08, 0.14, 0.06, 0x6b4a2a), -0.1, 0.12, 0.08)); // bolt bag
+    const xb = new THREE.Group();
+    xb.add(at(box(0.04, 0.42, 0.05, 0x6d4a24), 0, -0.14, 0)); // stock, along the arm (forward when aiming)
+    xb.add(at(box(0.025, 0.025, 0.42, 0x4a3a2a), 0, -0.3, 0)); // prod
+    xb.add(at(box(0.006, 0.006, 0.4, 0xe8e2d0), -0.03, -0.26, 0)); // string
+    h.P.handR.add(xb); h.P.tool = xb;
+    return h;
+  }
   if (kind === "spearman") {
     const h = humanoid({ tunic: TEAM, legs: 0x5a4a36 });
     const cap = new THREE.Group(); cap.add(at(sph(0.092, 0x7a5532, false, 8, 5), 0, 0.075, 0)); cap.add(at(cyl(0.105, 0.105, 0.02, 0x5e4026, 10), 0, 0.05, 0)); h.P.head.add(cap);
@@ -84,7 +96,7 @@ export function makeUnit(kind) {
     h.P.handR.add(spear); h.P.tool = spear;
     return h;
   }
-  if (kind === "cavalry") {
+  if (kind === "cavalry" || kind === "knight") {
     // horse + rider; the rider reuses the humanoid rig (P.*), the horse adds its own pivots (P.h*)
     const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
     const P = {};
@@ -106,6 +118,15 @@ export function makeUnit(kind) {
     Object.assign(P, r.P); P.rider = r.body;
     P.torso.add(at(box(0.16, 0.16, 0.25, 0x8e959e), 0, 0.24, 0));
     const helm = new THREE.Group(); helm.add(at(sph(0.095, 0xb7bec7, false, 10, 6), 0, 0.08, 0)); helm.add(at(cyl(0.02, 0.03, 0.12, TEAM, 6, true), -0.02, 0.18, 0)); P.head.add(helm);
+    if (kind === "knight") { // barded horse, great helm, kite shield
+      horse.add(at(box(0.66, 0.2, 0.26, TEAM, true), 0, 0.46, 0)); // caparison over the body
+      horse.add(at(box(0.5, 0.05, 0.28, 0xc9a35a), 0, 0.57, 0)); // trim
+      const chanfron = at(box(0.18, 0.08, 0.11, 0xb7bec7), 0.1, 0.0, 0); chanfron.rotation.z = -0.5; P.hHead.add(chanfron);
+      helm.add(at(cyl(0.1, 0.1, 0.16, 0xc0c7cf, 10), 0, 0.06, 0)); helm.add(at(box(0.02, 0.02, 0.12, 0x2b2b2b), 0.1, 0.07, 0)); // great helm + visor slit
+      helm.add(at(sph(0.05, 0xe8e2d0, false, 6, 4), -0.02, 0.24, 0)); // plume
+      const shield = new THREE.Group(); shield.add(at(box(0.03, 0.3, 0.18, TEAM, true), 0, 0, 0)); shield.add(at(box(0.035, 0.06, 0.06, 0xc9a35a), -0.005, 0.04, 0));
+      shield.position.set(0.05, 0.0, -0.06); P.handL.add(shield);
+    }
     const sword = new THREE.Group(); sword.add(at(box(0.025, 0.44, 0.06, 0xdfe5ec), 0, 0.28, 0)); sword.add(at(box(0.03, 0.03, 0.16, 0x8a6a32), 0, 0.05, 0));
     sword.rotation.z = -Math.PI / 2; P.handR.add(sword); P.tool = sword;
     root.scale.setScalar(1.05);
@@ -132,7 +153,7 @@ export function makeUnit(kind) {
 
 // animation pose: anim in idle|walk|attack|work|death, t in [0,1)
 export function pose(kind, h, anim, t) {
-  if (kind === "cavalry") return poseCavalry(h, anim, t);
+  if (kind === "cavalry" || kind === "knight") return poseCavalry(h, anim, t);
   if (kind === "ram") return poseRam(h, anim, t);
   const P = h.P, s = Math.sin(t * Math.PI * 2);
   for (const k of ["legL", "legR", "armL", "armR", "torso", "head"]) P[k].rotation.set(0, 0, 0);
@@ -146,6 +167,11 @@ export function pose(kind, h, anim, t) {
     h.body.position.y = Math.abs(Math.cos(t * Math.PI * 2)) * 0.025;
   }
   if (kind === "spearman") { P.armL.rotation.z = 0.5; P.armL.rotation.x = 0.2; P.armR.rotation.z = 0.9; }
+  if (kind === "crossbowman" && anim !== "death") {
+    const aim = anim === "attack" ? 1.45 : 0.75, kick = anim === "attack" && t < 0.2 ? (0.2 - t) * 1.2 : 0;
+    P.armR.rotation.z = aim + kick; P.armL.rotation.z = aim - 0.05 + kick; P.armL.rotation.x = 0.35;
+    if (anim === "attack") { P.torso.rotation.z = -0.05 - kick * 0.3; P.legL.rotation.z = 0.25; P.legR.rotation.z = -0.15; }
+  }
   if (anim === "attack" && kind === "spearman") {
     const thrust = t < 0.4 ? -t / 0.4 * 0.4 : t < 0.6 ? -0.4 + (t - 0.4) / 0.2 * 1.4 : 1 - (t - 0.6) / 0.4;
     P.armR.rotation.z = 1.1 + thrust * 0.25; P.torso.rotation.z = -thrust * 0.12; h.body.position.x = thrust * 0.08;
@@ -321,6 +347,44 @@ export function makeBuilding(kind) {
     g.add(at(box(0.2, 0.14, 0.12, 0x3a3a3e), 0.85, 0.27, -0.55)); g.add(at(box(0.14, 0.12, 0.1, 0x55402a), 0.85, 0.16, -0.55)); // anvil on a block
     for (let i = 0; i < 3; i++) { const l = at(cyl(0.06, 0.06, 0.95, 0x7a5532, 7), 1.15, 0.18 + (i === 2 ? 0.1 : 0), 0.55 + (i % 2) * 0.13 - (i === 2 ? 0.065 : 0)); l.rotation.x = Math.PI / 2; g.add(l); }
     banner(g, 1.08, 0.75, -0.2); flagPole(g, -1.05, 1.0, 1.9); barrel(g, 1.2, -0.85); crate(g, -0.75, 1.15, 0.2);
+  } else if (kind === "wall") { // one tile of wall; neighbours join into a continuous wall
+    const stone = 0x9a9184;
+    g.add(at(mesh(jitter(new THREE.BoxGeometry(1.0, 0.62, 1.0, 2, 2, 2), 0.03, 7), mat(stone)), 0, 0.31, 0));
+    for (const [x, z] of [[-0.3, -0.3], [0.3, -0.3], [-0.3, 0.3], [0.3, 0.3]]) g.add(at(box(0.3, 0.16, 0.3, 0xa89f90), x, 0.7, z)); // merlons
+    g.add(at(box(1.01, 0.05, 1.01, TEAM, true), 0, 0.58, 0)); // owner band
+    for (let i = 0; i < 3; i++) g.add(at(box(1.02, 0.015, 1.02, 0x7d756a), 0, 0.12 + i * 0.16, 0)); // mortar lines
+  } else if (kind === "gate") {
+    const stone = 0x9a9184;
+    for (const [x, z] of [[-0.38, -0.38], [0.38, -0.38], [-0.38, 0.38], [0.38, 0.38]]) { g.add(at(box(0.26, 0.95, 0.26, stone), x, 0.47, z)); g.add(at(box(0.3, 0.1, 0.3, 0xa89f90), x, 1.0, z)); }
+    for (const z of [-0.38, 0.38]) g.add(at(box(1.0, 0.18, 0.2, stone), 0, 0.85, z));
+    for (const x of [-0.38, 0.38]) g.add(at(box(0.2, 0.18, 1.0, stone), x, 0.85, 0));
+    for (let i = -2; i <= 2; i++) g.add(at(box(0.04, 0.7, 0.04, 0x4a3220), i * 0.12, 0.42, 0));
+    for (let i = 0; i < 4; i++) g.add(at(box(0.6, 0.04, 0.04, 0x4a3220), 0, 0.15 + i * 0.17, 0)); // portcullis
+    banner(g, 0.5, 0.62, 0); banner(g, -0.5, 0.62, 0);
+  } else if (kind === "tower") {
+    stoneBase(g, 1.7, 1.7, 0.1);
+    g.add(at(mesh(jitter(new THREE.CylinderGeometry(0.6, 0.72, 1.9, 12, 3), 0.03, 3), mat(0xa0978a)), 0, 1.05, 0));
+    g.add(at(cyl(0.72, 0.68, 0.18, 0x8f877a, 12), 0, 2.05, 0));
+    for (let i = 0; i < 8; i++) { const a = (i / 8) * Math.PI * 2; g.add(at(box(0.18, 0.18, 0.18, 0xa89f90), Math.cos(a) * 0.62, 2.22, Math.sin(a) * 0.62)); }
+    const roof = mesh(new THREE.ConeGeometry(0.55, 0.7, 12), mat(TEAM), true); roof.position.y = 2.6; g.add(roof);
+    for (const [x, z, r] of [[0.66, 0, 0], [0, 0.66, Math.PI / 2], [-0.66, 0, 0]]) { const sl = at(box(0.03, 0.22, 0.06, 0x2b2016), x, 1.3, z); sl.rotation.y = r; g.add(sl); }
+    door(g, 0.72, 0.1, 0.0, 0, 0.26, 0.4); flagPole(g, 0, 0, 3.3);
+  } else if (kind === "market") {
+    stoneBase(g, 2.7, 2.7, 0.06);
+    g.add(at(box(2.6, 0.03, 2.6, 0xb8a27a), 0, 0.07, 0)); // paved square
+    const stall = (x, z, rot, cloth) => {
+      const s2 = new THREE.Group();
+      for (const [px, pz] of [[-0.4, -0.3], [0.4, -0.3], [-0.4, 0.3], [0.4, 0.3]]) s2.add(at(box(0.05, 0.6, 0.05, 0x5a3d22), px, 0.38, pz));
+      s2.add(at(box(0.9, 0.08, 0.6, 0x8a6a3e), 0, 0.35, 0)); // counter
+      for (let i = 0; i < 4; i++) s2.add(at(box(0.23, 0.04, 0.72, i % 2 ? 0xf3ead7 : cloth, !(i % 2) && cloth === TEAM), -0.34 + i * 0.23, 0.72, 0)); // striped awning
+      s2.add(at(sph(0.08, 0xd4502a, false), -0.2, 0.44, 0)); s2.add(at(sph(0.08, 0x8aa63a, false), 0.0, 0.44, 0.05)); s2.add(at(cyl(0.07, 0.07, 0.1, 0xe8b64c, 8), 0.22, 0.44, 0));
+      s2.position.set(x, 0.07, z); s2.rotation.y = rot; g.add(s2);
+    };
+    stall(-0.6, -0.65, 0, TEAM); stall(0.65, -0.55, -Math.PI / 2, 0xb5452e); stall(-0.65, 0.6, Math.PI / 2, 0x3f6fa8);
+    g.add(at(cyl(0.28, 0.3, 0.3, 0x8f877a, 12), 0.35, 0.22, 0.4)); g.add(at(cyl(0.22, 0.22, 0.02, 0x3f6fa8, 12), 0.35, 0.37, 0.4)); // well
+    for (const x of [0.15, 0.55]) g.add(at(box(0.04, 0.5, 0.04, 0x5a3d22), x, 0.55, 0.4));
+    g.add(at(box(0.5, 0.04, 0.04, 0x5a3d22), 0.35, 0.8, 0.4));
+    crate(g, 1.0, 0.9, 0.2); crate(g, 1.15, 0.6, 0.16); barrel(g, 0.9, 0.25); barrel(g, -0.2, 1.05); flagPole(g, -1.1, -1.1, 1.8);
   } else if (kind === "farm") {
     g.add(at(box(1.85, 0.04, 1.85, 0x6e5232), 0, 0.02, 0));
     for (let i = 0; i < 7; i++) { g.add(at(box(1.7, 0.05, 0.08, 0x57402a), 0, 0.05, -0.75 + i * 0.25)); for (let j = 0; j < 9; j++) { const c = mesh(new THREE.ConeGeometry(0.05, 0.18, 5), mat([0x8aa63a, 0x9cb648, 0x7a9a32][(i + j) % 3])); c.position.set(-0.78 + j * 0.195, 0.14, -0.75 + i * 0.25); g.add(c); } }

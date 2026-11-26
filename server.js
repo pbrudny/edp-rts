@@ -121,9 +121,10 @@ function tickRoom(room) {
   if (!room.replay && humans.length && humans.every((x) => x.leftAt && !x.gone)) return; // every human dropped out: pause until one is back
   for (const [pid, c] of room.inbox.splice(0)) {
     if (c.ids !== undefined && (!Array.isArray(c.ids) || c.ids.length > 200 || !c.ids.every(Number.isInteger))) continue;
-    for (const f of ["x", "y"]) if (c[f] !== undefined) c[f] = Number(c[f]) || 0;
-    if (c.t === "build" || c.t === "tree") { c.x = Math.floor(c.x); c.y = Math.floor(c.y); }
-    const clean = { t: String(c.t), ids: c.ids, id: c.id, kind: c.kind, slot: c.slot, x: c.x, y: c.y }; // only known fields go into the replay
+    for (const f of ["x", "y", "x2", "y2"]) if (c[f] !== undefined) c[f] = Number(c[f]) || 0;
+    if (c.t === "build" || c.t === "tree" || c.t === "wall") for (const f of ["x", "y", "x2", "y2"]) if (c[f] !== undefined) c[f] = Math.floor(c[f]);
+    const res = ["food", "wood", "gold"].includes(c.res) ? c.res : undefined, to = Number.isInteger(c.to) ? c.to : undefined;
+    const clean = { t: String(c.t), ids: c.ids, id: c.id, kind: c.kind, slot: c.slot, x: c.x, y: c.y, x2: c.x2, y2: c.y2, res, buy: c.buy === undefined ? undefined : !!c.buy, to }; // only known fields go into the replay
     for (const k of Object.keys(clean)) if (clean[k] === undefined) delete clean[k];
     room.rec.push([s.tick, pid, clean]);
     apply(s, pid, clean);
