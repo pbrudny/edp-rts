@@ -83,9 +83,17 @@ const rooms = new Map();
 const code = () => { const A = "ABCDEFGHJKLMNPQRSTUVWXYZ"; let c; do { c = Array.from({ length: 4 }, () => A[(Math.random() * A.length) | 0]).join(""); } while (rooms.has(c)); return c; };
 const clean = (n) => String(n ?? "").replace(/[^\p{L}\p{N} _.-]/gu, "").trim().slice(0, 16) || "Player";
 
-function lobbyState(room) {
-  return { t: "lobby", code: room.code, host: room.slots[0]?.ws ? 0 : -1, slots: room.slots.map((s) => ({ name: s.name, ai: s.ai ?? null })), started: !!room.sim };
+const GRACE = 60000; // a player who drops out of a running game keeps their slot this long
+const AI_NAMES = ["Ashford", "Brennmark", "Cold Harbour", "Dunmere"];
+// lobby: the host is a person (room.host = their socket); if they leave, the next human in the list takes over
+function sendLobby(room) {
+  if (!room.slots.some((x) => x.ws === room.host)) room.host = room.slots.find((x) => x.ws)?.ws ?? null;
+  const host = room.slots.findIndex((x) => x.ws === room.host);
+  room.slots.forEach((slot, i) => slot.ws?.readyState === 1 && slot.ws.send(JSON.stringify({ t: "lobby", code: room.code, host, you: i, slots: room.slots.map((x) => ({ name: x.name, ai: x.ai ?? null })) })));
 }
+const freeAiName = (room) => AI_NAMES.find((n) => !room.slots.some((x) => x.name === n + " AI")) + " AI";
+// every human slot gets a secret token so a reloaded page / dropped connection can take the slot back
+function seat(room, slot) { slot.token = randomUUID(); slot.ws.send(JSON.stringify({ t: "session", code: room.code, token: slot.token })); }
 function sendRoom(room, msg) { const m = JSON.stringify(msg); for (const s of room.slots) if (s.ws?.readyState === 1) s.ws.send(m); }
 
 function startRoom(room, seed) {
@@ -94,12 +102,18 @@ function startRoom(room, seed) {
   room.rec = []; // [tick, player, command]
   const map = JSON.stringify(mapInfo(room.sim));
   room.slots.forEach((s, i) => { if (s.ws?.readyState === 1) { s.ws.send(map); s.ws.send(JSON.stringify({ t: "start", me: i })); } });
+  room.map = map;
   for (const w of room.watchers ?? []) if (w.readyState === 1) { w.send(map); w.send(JSON.stringify({ t: "start", me: -1 })); }
   room.timer = setInterval(() => tickRoom(room), TICK * 1000);
 }
 function apply(s, pid, c) { try { command(s, pid, c); } catch (e) { console.warn("bad command", e.message); } }
 function tickRoom(room) {
   const s = room.sim;
+  room.slots.forEach((slot, i) => { // dropped out and didn't come back in time: resign for them
+    if (slot.leftAt && !slot.gone && Date.now() - slot.leftAt > GRACE) { slot.gone = true; room.inbox.push([i, { t: "resign" }]); notice(room, `${slot.name} left the game.`); }
+  });
+  const humans = room.slots.filter((x) => !x.ai);
+  if (!room.replay && humans.length && humans.every((x) => x.leftAt && !x.gone)) return; // every human dropped out: pause until one is back
   for (const [pid, c] of room.inbox.splice(0)) {
     if (c.ids !== undefined && (!Array.isArray(c.ids) || c.ids.length > 200 || !c.ids.every(Number.isInteger))) continue;
     for (const f of ["x", "y"]) if (c[f] !== undefined) c[f] = Number(c[f]) || 0;
@@ -123,9 +137,10 @@ function tickRoom(room) {
   room.slots.forEach((slot, i) => { if (slot.ws?.readyState === 1) slot.ws.send(JSON.stringify(snapshot(s, i))); });
   if (room.watchers?.length) { const m = JSON.stringify(snapshot(s, -1)); for (const w of room.watchers) if (w.readyState === 1) w.send(m); }
   if (s.over && !room.endAt) { room.endAt = Date.now() + (room.replay ? 60000 : 30000); finish(room); }
-  const anyone = room.slots.some((x) => x.ws?.readyState === 1) || room.watchers?.some((w) => w.readyState === 1);
+  const anyone = room.slots.some((x) => x.ws?.readyState === 1 || (x.leftAt && !x.gone)) || room.watchers?.some((w) => w.readyState === 1);
   if ((room.endAt && Date.now() > room.endAt) || !anyone) closeRoom(room);
 }
+function notice(room, msg) { sendRoom(room, { t: "notice", msg }); }
 function closeRoom(room) { clearInterval(room.timer); rooms.delete(room.code); if (room.sim && !room.sim.over) saveReplay(room); }
 
 // ------------------------------------------------------------------ http + ws
@@ -164,6 +179,17 @@ wss.on("connection", (ws) => {
     if (m.t === "cmd") { if (room?.sim && pid >= 0 && m.c && typeof m.c === "object") room.inbox.push([pid, m.c]); return; }
     if (room && m.t !== "addAI" && m.t !== "start" && m.t !== "kick" && m.t !== "speed") return;
     switch (m.t) {
+      case "rejoin": { // take a slot back in a running game (page reload, network drop)
+        const r = rooms.get(String(m.code ?? "").toUpperCase());
+        const i = r?.sim && !r.sim.over && typeof m.token === "string" ? r.slots.findIndex((x) => x.token === m.token && !x.gone) : -1;
+        if (i < 0) return reply({ t: "error", msg: "That game has ended.", rejoin: false });
+        const slot = r.slots[i], old = slot.ws;
+        slot.ws = ws; slot.leftAt = null; room = r; pid = i;
+        if (old && old !== ws && old.readyState === 1) old.close(4000, "replaced"); // the game was opened in another tab
+        ws.send(r.map); ws.send(JSON.stringify({ t: "start", me: i }));
+        notice(r, `${slot.name} is back.`);
+        break;
+      }
       case "replay": {
         if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
         const id = String(m.id ?? "");
@@ -194,14 +220,14 @@ wss.on("connection", (ws) => {
         const diff = ["easy", "normal", "hard"].includes(m.diff) ? m.diff : "normal";
         const n = Math.min(3, Math.max(1, Number(m.ais) || 1));
         room = { code: code(), slots: [{ name: clean(m.name), ws }], inbox: [], peaceful: !!m.peaceful };
-        for (let i = 0; i < n; i++) room.slots.push({ name: ["Ashford", "Brennmark", "Cold Harbour"][i] + (room.peaceful ? "" : " AI"), ai: diff });
-        rooms.set(room.code, room); pid = 0; startRoom(room);
+        for (let i = 0; i < n; i++) room.slots.push({ name: AI_NAMES[i] + (room.peaceful ? "" : " AI"), ai: diff });
+        rooms.set(room.code, room); pid = 0; seat(room, room.slots[0]); startRoom(room);
         break;
       }
       case "create":
         if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
-        room = { code: code(), slots: [{ name: clean(m.name), ws }], inbox: [] }; rooms.set(room.code, room); pid = 0;
-        sendRoom(room, lobbyState(room));
+        room = { code: code(), slots: [{ name: clean(m.name), ws }], inbox: [], host: ws }; rooms.set(room.code, room); pid = 0;
+        seat(room, room.slots[0]); sendLobby(room);
         break;
       case "join": {
         const r = rooms.get(String(m.code ?? "").toUpperCase());
@@ -209,21 +235,21 @@ wss.on("connection", (ws) => {
         if (r.sim) return reply({ t: "error", msg: "That game has already started." });
         if (r.slots.length >= 4) return reply({ t: "error", msg: "That game is full." });
         room = r; pid = r.slots.length; r.slots.push({ name: clean(m.name), ws });
-        sendRoom(r, lobbyState(r));
+        seat(r, r.slots[pid]); sendLobby(r);
         break;
       }
       case "addAI":
-        if (room && pid === 0 && !room.sim && room.slots.length < 4) {
+        if (room && ws === room.host && !room.sim && room.slots.length < 4) {
           const diff = ["easy", "normal", "hard"].includes(m.diff) ? m.diff : "normal";
-          room.slots.push({ name: ["Ashford", "Brennmark", "Cold Harbour"][room.slots.length - 1] + " AI", ai: diff });
-          sendRoom(room, lobbyState(room));
+          room.slots.push({ name: freeAiName(room), ai: diff });
+          sendLobby(room);
         }
         break;
       case "kick":
-        if (room && pid === 0 && !room.sim && m.slot > 0 && room.slots[m.slot]?.ai) { room.slots.splice(m.slot, 1); sendRoom(room, lobbyState(room)); }
+        if (room && ws === room.host && !room.sim && room.slots[m.slot]?.ai) { room.slots.splice(m.slot, 1); sendLobby(room); }
         break;
       case "start":
-        if (room && pid === 0 && !room.sim && room.slots.length >= 2) startRoom(room);
+        if (room && ws === room.host && !room.sim && room.slots.length >= 2) startRoom(room);
         break;
     }
   });
@@ -232,10 +258,13 @@ wss.on("connection", (ws) => {
     if (!room.sim) {
       const i = room.slots.findIndex((s) => s.ws === ws);
       if (i >= 0) room.slots.splice(i, 1);
-      if (!room.slots.some((s) => s.ws)) rooms.delete(room.code); else sendRoom(room, lobbyState(room));
+      if (!room.slots.some((s) => s.ws)) rooms.delete(room.code); else sendLobby(room); // host gone: sendLobby hands it over
     } else {
       const i = room.slots.findIndex((s) => s.ws === ws);
-      if (i >= 0) { room.slots[i].ws = null; room.inbox.push([i, { t: "resign" }]); } // leaving a running game = resign (recorded like any command)
+      if (i >= 0 && !room.sim.over) { // keep the slot for GRACE; tickRoom resigns for them if they don't rejoin
+        const slot = room.slots[i]; slot.ws = null; slot.leftAt = Date.now();
+        if (room.sim.players[i]?.alive) notice(room, `${slot.name} lost connection. Waiting up to 60 s for them to come back…`);
+      } else if (i >= 0) room.slots[i].ws = null;
     }
   });
 });

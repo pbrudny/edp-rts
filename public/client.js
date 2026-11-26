@@ -78,15 +78,37 @@ function connect(first) {
   ws.onopen = () => first && ws.send(JSON.stringify(first));
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.t === "error") { $("err").textContent = m.msg; toast(m.msg); }
+    if (m.t === "error") { if (m.rejoin === false) return rejoinFailed(); $("err").textContent = m.msg; toast(m.msg); }
+    else if (m.t === "session") saveSession(m);
+    else if (m.t === "notice") toast(m.msg);
     else if (m.t === "lobby") showLobby(m);
-    else if (m.t === "map") setMap(m);
-    else if (m.t === "start") startGame(m.me);
+    else if (m.t === "map") { if (!map) setMap(m); } // a reconnect resends the map of the game we already have
+    else if (m.t === "start") { reconnectUntil = 0; startGame(m.me); }
     else if (m.t === "s") { if (ready) onSnap(m); else pendingSnap = m; }
     else if (m.t === "stats") showStats(m);
   };
   const beat = setInterval(() => ws.readyState === 1 && ws.send('{"t":"ping"}'), 25000); // keep idle lobby alive behind the proxy
-  ws.onclose = () => { clearInterval(beat); if (playing && !snap?.over) toast("Connection lost."); else if (!playing) { $("err").textContent = "Connection lost, create the game again."; if (!$("lobby").hidden) { $("lobby").hidden = true; $("menu").hidden = false; } } };
+  ws.onclose = (ev) => {
+    clearInterval(beat);
+    if (ev.code === 4000) { playing = false; return toast("This game is now open in another tab."); }
+    if (playing && !snap?.over && me >= 0 && session()) { // try to take our slot back for up to 60 s
+      if (!reconnectUntil) { reconnectUntil = Date.now() + 60000; toast("Connection lost. Reconnecting…"); }
+      if (Date.now() < reconnectUntil) setTimeout(() => connect({ t: "rejoin", ...session() }), 2000); else toast("Couldn't reconnect to the game.");
+    } else if (playing && !snap?.over) toast("Connection lost.");
+    else if (rejoining && !playing) rejoinFailed();
+    else if (!playing) { $("err").textContent = "Connection lost, create the game again."; if (!$("lobby").hidden) { $("lobby").hidden = true; $("menu").hidden = false; } }
+  };
+}
+// ------------------------------------------------------------------ session (rejoin after reload / network drop)
+let reconnectUntil = 0, rejoining = false;
+const session = () => { try { const v = JSON.parse(localStorage.getItem("er-session")); return v && Date.now() - v.at < 3 * 3600e3 ? { code: v.code, token: v.token } : null; } catch { return null; } };
+const saveSession = (m) => { try { localStorage.setItem("er-session", JSON.stringify({ code: m.code, token: m.token, at: Date.now() })); } catch {} };
+const clearSession = () => { try { localStorage.removeItem("er-session"); } catch {} };
+function rejoinFailed() {
+  clearSession(); rejoining = false; reconnectUntil = 0;
+  $("loading").hidden = true;
+  if (playing) { toast("The game has ended."); return; }
+  $("menu").hidden = false; $("err").textContent = "Your previous game has ended.";
 }
 let ready = false;
 const send = (m) => ws?.readyState === 1 && ws.send(JSON.stringify(m));
@@ -96,7 +118,6 @@ const cmd = (c) => send({ t: "cmd", c });
 const nameVal = () => $("name").value.trim() || "Commander";
 try { $("name").value = localStorage.getItem("er-name") ?? ""; } catch {}
 const saveName = () => { try { localStorage.setItem("er-name", $("name").value.trim()); } catch {} };
-let createdHere = false;
 $("watch").onclick = () => connect({ t: "watch", diff: $("diff").value, ais: $("ais").value, speed: 2 });
 $("speed").onchange = () => send({ t: "speed", speed: +$("speed").value });
 $("playSingle").onclick = () => { saveName(); connect({ t: "single", name: nameVal(), diff: $("diff").value, ais: $("ais").value, peaceful: $("mode").value === "peaceful" }); };
@@ -105,27 +126,35 @@ $("mode").onchange = () => { // peaceful: the other players are allies, and diff
   for (const o of $("ais").options) o.textContent = `${o.value} ${p ? (o.value === "1" ? "ally" : "allies") : o.value === "1" ? "opponent" : "opponents"}`;
   $("diff").hidden = p; $("modeHint").hidden = !p;
 };
-$("create").onclick = () => { saveName(); createdHere = true; connect({ t: "create", name: nameVal() }); };
+$("create").onclick = () => { saveName(); connect({ t: "create", name: nameVal() }); };
 $("join").onclick = () => { saveName(); const c = $("joinCode").value.trim().toUpperCase(); if (c.length === 4) connect({ t: "join", code: c, name: nameVal() }); else $("err").textContent = "Enter the 4-letter code."; };
 $("joinCode").onkeydown = (e) => e.key === "Enter" && $("join").click();
 $("addAI").onclick = () => send({ t: "addAI", diff: $("aiDiff").value });
 $("start").onclick = () => send({ t: "start" });
-$("leave").onclick = () => location.reload();
-$("again").onclick = () => (location.href = "/");
+$("leave").onclick = () => { clearSession(); location.href = "/"; };
+$("again").onclick = () => { clearSession(); location.href = "/"; };
+$("copyInvite").onclick = () => { $("inviteLink").select(); navigator.clipboard?.writeText($("inviteLink").value).then(() => toast("Invite link copied."), () => toast("Select the link and copy it.")); };
 let resignArm = 0, peacefulStart = false;
 $("resign").onclick = () => { if (Date.now() - resignArm < 3000) cmd({ t: "resign" }); else { resignArm = Date.now(); toast(snap?.peaceful ? "Click End game again to finish and see your stats." : "Click Resign again to confirm."); } };
 $("mute").onclick = () => { $("mute").textContent = Sfx.toggleMute() ? "Sound off" : "Sound on"; };
 $("mute").textContent = Sfx.isMuted() ? "Sound off" : "Sound on";
 
+let wasHost = false;
 function showLobby(m) {
   $("menu").hidden = true; $("lobby").hidden = false;
   $("lobbyCode").textContent = m.code;
-  const amHost = createdHere;
-  $("slots").innerHTML = m.slots.map((s, i) => `<div class="slot"><b style="background:${COLORS[i]}"></b>${esc(s.name)}${s.ai ? ` <small>(${s.ai})</small>` : ""}${i === 0 ? " <small>host</small>" : ""}${amHost && s.ai ? ` <button data-kick="${i}" style="margin-left:auto">Remove</button>` : ""}</div>`).join("");
+  $("inviteLink").value = `${location.origin}/?join=${m.code}`;
+  if (location.search) history.replaceState(null, "", "/");
+  const amHost = m.you === m.host;
+  if (amHost && !wasHost && lobbySeen) toast("The host left. You are the host now.");
+  wasHost = amHost; lobbySeen = true;
+  $("slots").innerHTML = m.slots.map((s, i) => `<div class="slot"><b style="background:${COLORS[i]}"></b>${esc(s.name)}${s.ai ? ` <small>(${s.ai})</small>` : ""}${i === m.host ? " <small>host</small>" : ""}${i === m.you ? " <small>(you)</small>" : ""}${amHost && s.ai ? ` <button data-kick="${i}" style="margin-left:auto">Remove</button>` : ""}</div>`).join("");
   $("slots").querySelectorAll("[data-kick]").forEach((b) => (b.onclick = () => send({ t: "kick", slot: +b.dataset.kick })));
   $("hostCtl").hidden = !amHost; $("waitHost").hidden = amHost;
   $("start").disabled = m.slots.length < 2;
 }
+
+let lobbySeen = false;
 
 // ------------------------------------------------------------------ map + fog
 async function setMap(m) {
@@ -202,6 +231,7 @@ function onSnap(s) {
   for (const id of sel) if (!s.map.has(id)) sel.delete(id);
   sounds(s);
   updateHud();
+  if (s.over) clearSession();
   if (s.over && !$("end").dataset.shown) {
     $("end").dataset.shown = 1;
     const won = s.winner === me;
@@ -680,8 +710,18 @@ async function loadReplays() {
   $("replayList").innerHTML = list.slice(0, 8).map((r) => `<div class="slot"><span style="flex:1">${r.players.map((p) => `<b style="background:${p.color};display:inline-block;width:9px;height:9px;border-radius:50%"></b> ${esc(p.name)}${p.name === r.winner ? " 👑" : ""}`).join(" &nbsp;")}</span><small style="color:var(--muted)">${r.peaceful ? "peaceful · " : ""}${when(r.date)} · ${r.minutes} min</small><button data-replay="${esc(r.id)}" ${r.playable ? "" : `disabled title="Recorded with an older version of the game"`}>Watch</button></div>`).join("");
   $("replayList").querySelectorAll("[data-replay]").forEach((b) => (b.onclick = () => watchReplay(b.dataset.replay)));
 }
-const qsReplay = new URLSearchParams(location.search).get("replay");
-if (qsReplay) setTimeout(() => watchReplay(qsReplay), 300); else loadReplays();
+const qs = new URLSearchParams(location.search), qsReplay = qs.get("replay"), qsJoin = (qs.get("join") ?? "").toUpperCase().replace(/[^A-Z]/g, "").slice(0, 4);
+if (qsReplay) setTimeout(() => watchReplay(qsReplay), 300);
+else {
+  loadReplays();
+  if (qsJoin.length === 4) { // invite link: code filled in, the player only adds a name and presses Join
+    $("joinCode").value = qsJoin; $("inviteCode").textContent = qsJoin; $("invite").hidden = false;
+    setTimeout(() => ($("name").value ? $("join") : $("name")).focus(), 100);
+  } else if (session() && !location.hash) { // reloaded during a game: take the slot back
+    rejoining = true; $("menu").hidden = true; $("loading").hidden = false;
+    setTimeout(() => connect({ t: "rejoin", ...session() }), 200);
+  }
+}
 
 // ------------------------------------------------------------------ end-of-game stats (table + two line charts)
 function showStats(m) {

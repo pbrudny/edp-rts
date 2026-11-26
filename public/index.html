@@ -111,6 +111,7 @@ table.stats thead th { color: var(--muted); font-weight: 700; }
     </div>
     <p id="modeHint" hidden>Peaceful: the other villages are your allies. No one attacks, you share vision, and you build for as long as you like. End the game any time to see your stats.</p>
     <h2>Multiplayer</h2>
+    <p id="invite" hidden style="color:var(--gold);font-weight:700">You're invited to game <span id="inviteCode"></span>. Enter your name and press Join.</p>
     <div class="row">
       <button class="big" id="create">Create game</button>
       <input id="joinCode" maxlength="4" placeholder="CODE" style="width:90px;text-transform:uppercase">
@@ -127,8 +128,9 @@ table.stats thead th { color: var(--muted); font-weight: 700; }
 <div class="overlay" id="lobby" hidden>
   <div class="card">
     <h2>Game lobby</h2>
-    <p>Share this code with your friends:</p>
+    <p>Share this code or the invite link with your friends:</p>
     <div class="code" id="lobbyCode">----</div>
+    <div class="row"><input id="inviteLink" readonly aria-label="Invite link" style="flex:1;min-width:0"><button id="copyInvite">Copy invite link</button></div>
     <div id="slots" style="display:grid;gap:6px"></div>
     <div class="row" id="hostCtl">
       <select id="aiDiff" aria-label="AI difficulty"><option value="easy">Easy AI</option><option value="normal" selected>Normal AI</option><option value="hard">Hard AI</option></select>

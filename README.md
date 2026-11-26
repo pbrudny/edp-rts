@@ -10,6 +10,14 @@ train villagers, swordsmen, spearmen, archers, cavalry and battering rams; resea
 Single player option: the other villages (1-3 AIs) are allies. No one can attack anyone, vision is shared, allied AIs grow their economy
 and keep only a small guard. There is no winner: the player builds as long as they like and "End game" shows the stats screen.
 
+## Multiplayer sessions
+- Invite link: the lobby shows `/?join=CODE` with a copy button; opening it fills in the code.
+- The host is tracked by the server; if the host leaves the lobby, the next human becomes host (Start / Add AI / Remove).
+- Rejoin: every human gets a secret session token (kept in `localStorage`). If the connection drops or the page is reloaded, the client
+  rejoins automatically (`{t:"rejoin", code, token}`). The slot is held for 60 s, then the player is resigned. Other players get notices.
+  While every human in a game is disconnected, the game pauses. Opening the game in a second tab moves it there (first tab closes with code 4000).
+- `node test-mp.mjs ws://127.0.0.1:3000` checks all of this against a running server.
+
 ## Units and counters
 Damage = attack + bonus vs the target − armour (melee) or arrow armour (archers, town centres), at least 1.
 
