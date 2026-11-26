@@ -9,6 +9,7 @@ services:
       BROKER_USER: demo
       BROKER_PASSWORD: ${EDP_BROKER_DEMO_PASSWORD}
       TOPIC: demo.rts
+    volumes: [rts-data:/data]
     networks: [coolify]
     labels:
       - traefik.enable=true
@@ -16,6 +17,8 @@ services:
       - traefik.http.routers.edp-rts.rule=Host(`rts.codewithpeter.com`)
       - traefik.http.routers.edp-rts.entrypoints=http
       - traefik.http.services.edp-rts.loadbalancer.server.port=3000
+volumes:
+  rts-data:
 networks:
   coolify:
     external: true

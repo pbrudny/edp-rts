@@ -1,5 +1,5 @@
 // Ember Realms client: PixiJS (WebGL) isometric renderer + HUD + input. Server is authoritative.
-import { KINDS, COLORS } from "/shared/sim.js";
+import { KINDS, COLORS, TECHS, BUILDABLE, stat, costOf, timeOf } from "/shared/sim.js";
 import * as Art from "/art.js";
 import * as Sfx from "/sfx.js";
 
@@ -7,9 +7,10 @@ const PIXI = window.PIXI;
 const $ = (id) => document.getElementById(id);
 const HW = 32, HH = 16; // half tile width/height in screen px (64 x 32 diamond)
 const iso = (x, y) => ({ x: (x - y) * HW, y: (x + y) * HH });
-const NAMES = { villager: "Villager", swordsman: "Swordsman", archer: "Archer", tc: "Town Centre", house: "House", barracks: "Barracks", storehouse: "Storehouse", farm: "Farm", gold: "Gold mine", berries: "Berry bush" };
-const KEYS = { villager: ["house", "barracks", "storehouse", "farm"], tc: ["villager"], barracks: ["swordsman", "archer"] };
-const HOTKEYS = ["q", "w", "e", "r"];
+const NAMES = { villager: "Villager", swordsman: "Swordsman", spearman: "Spearman", archer: "Archer", cavalry: "Cavalry", ram: "Battering ram", tc: "Town Centre", house: "House", barracks: "Barracks", storehouse: "Storehouse", farm: "Farm", workshop: "Workshop", gold: "Gold mine", berries: "Berry bush" };
+for (const [id, t] of Object.entries(TECHS)) NAMES[id] = t.name;
+const TIPS = { swordsman: "All-rounder. Strong against spearmen and buildings.", spearman: "Cheap. Strong against cavalry.", archer: "Ranged. Strong against spearmen.", cavalry: "Fast and tough. Strong against archers and rams.", ram: "Only attacks buildings, but hits them very hard. Arrows barely hurt it; kill it in melee.", villager: "Gathers resources and builds." };
+const HOTKEYS = ["q", "w", "e", "r", "t", "y"];
 const TINT = COLORS.map((c) => parseInt(c.slice(1), 16));
 
 // ------------------------------------------------------------------ PIXI setup
@@ -82,6 +83,7 @@ function connect(first) {
     else if (m.t === "map") setMap(m);
     else if (m.t === "start") startGame(m.me);
     else if (m.t === "s") { if (ready) onSnap(m); else pendingSnap = m; }
+    else if (m.t === "stats") showStats(m);
   };
   const beat = setInterval(() => ws.readyState === 1 && ws.send('{"t":"ping"}'), 25000); // keep idle lobby alive behind the proxy
   ws.onclose = () => { clearInterval(beat); if (playing && !snap?.over) toast("Connection lost."); else if (!playing) { $("err").textContent = "Connection lost, create the game again."; if (!$("lobby").hidden) { $("lobby").hidden = true; $("menu").hidden = false; } } };
@@ -104,7 +106,7 @@ $("joinCode").onkeydown = (e) => e.key === "Enter" && $("join").click();
 $("addAI").onclick = () => send({ t: "addAI", diff: $("aiDiff").value });
 $("start").onclick = () => send({ t: "start" });
 $("leave").onclick = () => location.reload();
-$("again").onclick = () => location.reload();
+$("again").onclick = () => (location.href = "/");
 let resignArm = 0;
 $("resign").onclick = () => { if (Date.now() - resignArm < 3000) cmd({ t: "resign" }); else { resignArm = Date.now(); toast("Click Resign again to confirm."); } };
 $("mute").onclick = () => { $("mute").textContent = Sfx.toggleMute() ? "Sound off" : "Sound on"; };
@@ -197,7 +199,7 @@ function onSnap(s) {
   if (s.over && !$("end").dataset.shown) {
     $("end").dataset.shown = 1;
     const won = s.winner === me;
-    if (me < 0) { $("end").hidden = false; $("endTitle").textContent = "Battle over"; $("endText").textContent = `${s.winner != null ? s.players[s.winner].name + " won" : "No winner"} after ${fmtClock(s.time)}.`; return; }
+    if (me < 0) { $("end").hidden = false; $("endTitle").textContent = replayId ? "Replay over" : "Battle over"; $("endText").textContent = `${s.winner != null ? s.players[s.winner].name + " won" : "No winner"} after ${fmtClock(s.time)}.`; return; }
     Sfx.play(won ? "victory" : "defeat");
     setTimeout(() => { $("end").hidden = false; $("endTitle").textContent = won ? "Victory" : "Defeat"; $("endText").textContent = won ? `Your realm stands alone after ${fmtClock(s.time)}.` : `${s.winner != null ? s.players[s.winner].name + " won" : "The game ended"} after ${fmtClock(s.time)}.`; }, 1500);
   } else if (!s.over && s.players[me] && !s.players[me].alive && !$("end").dataset.shown) {
@@ -418,7 +420,7 @@ function updateHud() {
   $("clock").textContent = fmtClock(snap.time);
   $("players").innerHTML = snap.players.map((p, i) => `<span class="${p.alive ? "" : "dead"}"><b style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : ""}</span>`).join("");
   const s = selected();
-  const key = s.map((e) => e[0] + ":" + (isUnitE(e) ? "" : JSON.stringify(e[8]) + e[6])).join() + "|" + r.food + r.wood + r.gold;
+  const key = s.map((e) => e[0] + ":" + (isUnitE(e) ? "" : JSON.stringify(e[8]) + e[6])).join() + "|" + r.food + r.wood + r.gold + "|" + snap.techs;
   renderInfo(s);
   if (key !== lastCmdKey) { lastCmdKey = key; renderCmds(); }
 }
@@ -434,7 +436,9 @@ function renderInfo(s) {
   let html = `<h3>${NAMES[kind]}</h3><div class="sub">${esc(owner)}</div>`;
   if (k.type === "resource") html += `<div class="sub">${e[7]} ${k.res} left</div>`;
   else {
-    html += `<div class="hpbar"><div style="width:${Math.max(0, Math.min(100, (e[5] / k.hp) * 100))}%"></div></div><div class="sub">HP ${e[5]}/${k.hp}${k.atk ? ` · attack ${k.atk}` : ""}${k.armor ? ` · armour ${k.armor}` : ""}</div>`;
+    const techs = e[2] === me ? Object.fromEntries(snap.techs.map((t) => [t, 1])) : {}, st = (key) => stat(techs, kind, key);
+    html += `<div class="hpbar"><div style="width:${Math.max(0, Math.min(100, (e[5] / k.hp) * 100))}%"></div></div><div class="sub">HP ${e[5]}/${k.hp}${k.atk ? ` · attack ${st("atk")}` : ""}${k.type === "unit" ? ` · armour ${st("armor")}/${st("pierce")}` : ""}${k.range > 2 ? ` · range ${st("range")}` : ""}</div>`;
+    if (TIPS[kind]) html += `<div class="sub">${TIPS[kind]}</div>`;
     if (k.type === "unit" && e[6] >= 0) html += `<div class="sub">Carrying ${["food", "wood", "gold"][e[6]]}</div>`;
     if (k.type === "building" && e[6] < 100) html += `<div class="sub">Under construction: ${e[6]}%</div>`;
     if (kind === "farm" && e[6] >= 100) html += `<div class="sub">${e[7]} food left</div>`;
@@ -453,17 +457,26 @@ function renderCmds() {
   };
   const units = s.filter(isUnitE);
   if (units.length) {
-    if (units.some((u) => kindOf(u) === "villager")) KEYS.villager.forEach((kind, i) => add(`Build ${NAMES[kind]}`, costText(KINDS[kind].cost), HOTKEYS[i], () => { mode = { build: kind }; }, canAfford(KINDS[kind].cost)));
+    if (units.some((u) => kindOf(u) === "villager")) BUILDABLE.forEach((kind, i) => add(`Build ${NAMES[kind]}`, costText(KINDS[kind].cost), HOTKEYS[i], () => { mode = { build: kind }; }, canAfford(KINDS[kind].cost)));
     if (units.some((u) => kindOf(u) !== "villager")) add("Attack-move", "attack anything on the way", "a", () => { mode = { attackMove: true }; });
     add("Stop", "cancel orders", "s", () => cmd({ t: "stop", ids: units.map((u) => u[0]) }));
     return;
   }
   const b = s[0], kind = kindOf(b);
   if (b[6] < 100) return;
-  (KEYS[kind] ?? []).forEach((u, i) => add(`Train ${NAMES[u]}`, `${costText(KINDS[u].cost)} · ${KINDS[u].time}s`, HOTKEYS[i], () => {
-    if (!canAfford(KINDS[u].cost)) return toast(`Not enough resources (${costText(KINDS[u].cost)}).`);
-    cmd({ t: "train", id: b[0], kind: u });
-  }, canAfford(KINDS[u].cost)));
+  const kb = KINDS[kind];
+  const queued = new Set(snap.ents.filter((e) => e[2] === me && e[8]).flatMap((e) => e[8][0]));
+  const items = [...(kb.trains ?? []), ...(kb.researches ?? []).filter((t) => !snap.techs.includes(t))];
+  items.forEach((u, i) => {
+    const tech = !!TECHS[u], busy = tech && queued.has(u);
+    add(`${tech ? "Research" : "Train"} ${NAMES[u]}`, busy ? "researching…" : `${costText(costOf(u))} · ${timeOf(u)}s`, HOTKEYS[i], () => {
+      if (!canAfford(costOf(u))) return toast(`Not enough resources (${costText(costOf(u))}).`);
+      cmd({ t: "train", id: b[0], kind: u });
+    }, canAfford(costOf(u)) && !busy);
+    box.lastChild.title = tech ? TECHS[u].desc : TIPS[u] ?? "";
+  });
+  const done = (kb.researches ?? []).filter((t) => snap.techs.includes(t));
+  if (done.length) { const n = document.createElement("small"); n.style.cssText = "color:var(--muted);width:100%"; n.textContent = "Researched: " + done.map((t) => NAMES[t]).join(", "); box.append(n); }
   if (b[8]) {
     const [q, p] = b[8];
     const row = document.createElement("div"); row.className = "queue";
@@ -513,7 +526,7 @@ app.ticker.add(() => {
       const act = e[7], d = dirOf(e[8]);
       let anim = "idle", n = 1, fps = 1;
       if (act === 4) { anim = "walk"; n = 8; fps = 11; }
-      else if (act === 1) { anim = "attack"; n = 6; fps = kind === "archer" ? 4 : 6; }
+      else if (act === 1) { anim = "attack"; n = 6; fps = kind === "archer" || kind === "ram" ? 4 : 6; }
       else if (act === 2 || act === 3) { anim = kind === "villager" ? "work" : "attack"; n = 6; fps = 7; }
       const fi = Math.floor(t * fps + e[0] * 0.37) % n;
       setFrame(sp, `${kind}_${anim}_${d}_${fi}`, tint);
@@ -528,7 +541,8 @@ app.ticker.add(() => {
             else if (nearTree(p)) { burst(hx, hy, 4, 0x8a5a30, 0.5, 0.6); Sfx.play("chop", hearing(s) * 0.6, 200); }
           }
         } else sp.hitFrame = false;
-        if (act === 1 && kind === "swordsman" && fi === 3) Sfx.play("clash", hearing(s) * 0.6, 260);
+        if (act === 1 && fi === 3 && (kind === "swordsman" || kind === "spearman" || kind === "cavalry")) Sfx.play("clash", hearing(s) * 0.6, 260);
+        if (act === 1 && kind === "ram" && fi === 4) { if (!sp.hitFrame) { sp.hitFrame = true; Sfx.play("hammer", hearing(s), 300); burst(s.x + Math.cos(e[8]) * 20, s.y - 10, 6, 0x8a7a66, 1.2, 0.7); } } else if (act === 1 && kind === "ram") sp.hitFrame = false;
       }
       if (sel.has(e[0])) ring(s.x, s.y, 13, 6.5, e[2] === me ? 0xf3ead7 : 0xe0674f);
       if (sel.has(e[0]) || e[5] < k.hp) bar(s.x - 11, s.y - 46, 22, e[5] / k.hp);
@@ -646,6 +660,72 @@ for (let i = 0; i < 50; i++) { const s = new PIXI.Sprite(dotTex); s.anchor.set(0
 function embersStep(dt) {
   embers.visible = !snap; if (snap) return;
   for (const s of embers.children) { s.y -= s.v * dt; s.x += Math.sin(s.y / 40) * 0.3; if (s.y < -10) { s.y = app.screen.height + 10; s.x = Math.random() * app.screen.width; } }
+}
+
+// ------------------------------------------------------------------ replays
+let replayId = null;
+function watchReplay(id) { replayId = id; history.replaceState(null, "", `/?replay=${id}`); connect({ t: "replay", id, speed: 2 }); }
+async function loadReplays() {
+  let list = [];
+  try { list = await (await fetch("/api/replays")).json(); } catch {}
+  $("replays").hidden = !list.length;
+  const when = (d) => new Date(d).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  $("replayList").innerHTML = list.slice(0, 8).map((r) => `<div class="slot"><span style="flex:1">${r.players.map((p) => `<b style="background:${p.color};display:inline-block;width:9px;height:9px;border-radius:50%"></b> ${esc(p.name)}${p.name === r.winner ? " 👑" : ""}`).join(" &nbsp;")}</span><small style="color:var(--muted)">${when(r.date)} · ${r.minutes} min</small><button data-replay="${esc(r.id)}" ${r.playable ? "" : `disabled title="Recorded with an older version of the game"`}>Watch</button></div>`).join("");
+  $("replayList").querySelectorAll("[data-replay]").forEach((b) => (b.onclick = () => watchReplay(b.dataset.replay)));
+}
+const qsReplay = new URLSearchParams(location.search).get("replay");
+if (qsReplay) setTimeout(() => watchReplay(qsReplay), 300); else loadReplays();
+
+// ------------------------------------------------------------------ end-of-game stats (table + two line charts)
+function showStats(m) {
+  const P = m.players, fmt = (n) => Math.round(n).toLocaleString();
+  const rows = P.map((p, i) => `<tr><th scope="row"><b class="dot" style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : ""}</th><td>${i === m.winner ? "Winner" : p.alive ? "—" : "Defeated"}</td><td>${p.villagers}</td><td>${p.military}</td><td>${p.killed}</td><td>${p.lost}</td><td>${fmt(p.food)}</td><td>${fmt(p.wood)}</td><td>${fmt(p.gold)}</td><td>${p.techs.length}</td></tr>`).join("");
+  const T = m.timeline;
+  const legend = `<div class="legend">${P.map((p) => `<span><b class="dot" style="background:${p.color}"></b>${esc(p.name)}</span>`).join("")}</div>`;
+  $("stats").innerHTML = `
+    <table class="stats"><thead><tr><th scope="col">Player</th><th scope="col">Result</th><th scope="col">Villagers</th><th scope="col">Soldiers</th><th scope="col">Kills</th><th scope="col">Losses</th><th scope="col">Food</th><th scope="col">Wood</th><th scope="col">Gold</th><th scope="col">Upgrades</th></tr></thead><tbody>${rows}</tbody></table>
+    <small style="color:var(--muted)">Villagers and soldiers trained; food, wood and gold gathered over the whole game.</small>
+    ${T.length > 1 ? legend + `<div class="charts">${chart("Army size", T, (pt, i) => pt.p[i][1], P)}${chart("Resources gathered", T, (pt, i) => pt.p[i][2] + pt.p[i][3] + pt.p[i][4], P)}</div>` : ""}
+    ${m.replay && !replayId ? `<div class="row" style="justify-content:center"><button id="watchRep">Watch the replay</button><button id="copyRep">Copy replay link</button></div>` : ""}`;
+  $("stats").querySelectorAll("figure").forEach(hoverChart);
+  if ($("watchRep")) { $("watchRep").onclick = () => (location.href = `/?replay=${m.replay}`); $("copyRep").onclick = () => { navigator.clipboard?.writeText(`${location.origin}/?replay=${m.replay}`); toast("Replay link copied."); }; }
+  if ($("end").hidden) { // replay reached its end without a winner, or a spectator joined late
+    $("end").hidden = false; $("end").dataset.shown = 1;
+    $("endTitle").textContent = replayId ? "Replay over" : "Game over";
+    $("endText").textContent = `${m.winner != null ? P[m.winner].name + " won" : "No winner"} after ${fmtClock(m.time)}.`;
+  }
+}
+const SVG_W = 360, SVG_H = 170, PAD = { l: 38, r: 70, t: 10, b: 24 };
+function chart(title, T, val, P) {
+  const tMax = T.at(-1).t || 1, yMax = Math.max(1, ...T.flatMap((pt) => P.map((_, i) => val(pt, i))));
+  const step = niceStep(yMax / 3), top = Math.ceil(yMax / step) * step;
+  const X = (t) => PAD.l + (t / tMax) * (SVG_W - PAD.l - PAD.r), Y = (v) => SVG_H - PAD.b - (v / top) * (SVG_H - PAD.t - PAD.b);
+  let g = "";
+  for (let v = 0; v <= top + 1e-9; v += step) g += `<line x1="${PAD.l}" x2="${SVG_W - PAD.r}" y1="${Y(v)}" y2="${Y(v)}" class="grid"/><text x="${PAD.l - 6}" y="${Y(v) + 4}" text-anchor="end">${v >= 1000 ? v / 1000 + "k" : v}</text>`;
+  const mins = Math.max(1, Math.round(tMax / 60 / 4));
+  for (let mm = 0; mm * 60 <= tMax; mm += mins) g += `<text x="${X(mm * 60)}" y="${SVG_H - 6}" text-anchor="middle">${mm}m</text>`;
+  // end labels, nudged apart so names never overlap
+  const ends = P.map((p, i) => ({ i, y: Y(val(T.at(-1), i)) })).sort((a, b) => a.y - b.y);
+  for (let k = 1; k < ends.length; k++) ends[k].y = Math.max(ends[k].y, ends[k - 1].y + 13);
+  const lines = P.map((p, i) => `<polyline fill="none" stroke="${p.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="${T.map((pt) => `${X(pt.t).toFixed(1)},${Y(val(pt, i)).toFixed(1)}`).join(" ")}"/>`).join("");
+  const labels = ends.map(({ i, y }) => `<text x="${SVG_W - PAD.r + 6}" y="${y + 4}" class="lbl">${esc(P[i].name.slice(0, 10))}</text>`).join("");
+  const data = JSON.stringify(T.map((pt) => [pt.t, ...P.map((_, i) => val(pt, i))]));
+  return `<figure data-series='${data}' data-names='${esc(JSON.stringify(P.map((p) => [p.name, p.color])))}'><figcaption>${title}</figcaption><svg viewBox="0 0 ${SVG_W} ${SVG_H}" role="img" aria-label="${title} over time per player">${g}${lines}${labels}<line class="cross" y1="${PAD.t}" y2="${SVG_H - PAD.b}" visibility="hidden"/><rect x="${PAD.l}" y="${PAD.t}" width="${SVG_W - PAD.l - PAD.r}" height="${SVG_H - PAD.t - PAD.b}" fill="transparent"/></svg><div class="tip" hidden></div></figure>`;
+}
+function niceStep(raw) { const p = 10 ** Math.floor(Math.log10(Math.max(raw, 1e-9))), f = raw / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; }
+function hoverChart(fig) { // crosshair + tooltip with every player's value at the hovered time
+  const data = JSON.parse(fig.dataset.series), names = JSON.parse(fig.dataset.names), svg = fig.querySelector("svg"), cross = fig.querySelector(".cross"), tip = fig.querySelector(".tip");
+  const tMax = data.at(-1)[0] || 1;
+  svg.addEventListener("mousemove", (e) => {
+    const r = svg.getBoundingClientRect(), x = ((e.clientX - r.left) / r.width) * SVG_W;
+    const t = ((x - PAD.l) / (SVG_W - PAD.l - PAD.r)) * tMax;
+    const row = data.reduce((a, b) => (Math.abs(b[0] - t) < Math.abs(a[0] - t) ? b : a));
+    const cx = PAD.l + (row[0] / tMax) * (SVG_W - PAD.l - PAD.r);
+    cross.setAttribute("x1", cx); cross.setAttribute("x2", cx); cross.setAttribute("visibility", "visible");
+    tip.hidden = false; tip.innerHTML = `<strong>${fmtClock(row[0])}</strong>` + names.map(([n, c], i) => `<div><b class="dot" style="background:${c}"></b>${esc(n)} <span>${Math.round(row[i + 1]).toLocaleString()}</span></div>`).join("");
+    const left = (cx / SVG_W) * r.width; tip.style.left = `${left > r.width / 2 ? left - tip.offsetWidth - 10 : left + 10}px`;
+  });
+  svg.addEventListener("mouseleave", () => { cross.setAttribute("visibility", "hidden"); tip.hidden = true; });
 }
 
 // test hook: /#autoplay starts a single-player game immediately (used for headless screenshots)

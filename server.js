@@ -5,11 +5,12 @@
 //                                   \--events (REST, batched)--> broker demo.rts
 
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, readdir, unlink } from "node:fs/promises";
+import { readFileSync, mkdirSync } from "node:fs";
 import { extname } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { WebSocketServer } from "ws";
-import { createGame, step, command, snapshot, mapInfo, TICK } from "./shared/sim.js";
+import { createGame, step, command, snapshot, mapInfo, gameStats, TICK } from "./shared/sim.js";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const BROKER = process.env.BROKER_URL;
@@ -17,6 +18,11 @@ const AUTH = process.env.BROKER_PASSWORD ? "Basic " + Buffer.from(`${process.env
 const TOPIC = process.env.TOPIC ?? "demo.rts";
 const MAX_ROOMS = 30;
 const VERSION = Date.now().toString(36); // changes on every deploy/restart
+// replays = seed + every player command; they only play back on the exact same rules, so they carry a hash of sim.js
+const SIM_HASH = createHash("sha256").update(readFileSync(new URL("./shared/sim.js", import.meta.url))).digest("hex").slice(0, 12);
+const REPLAYS = (process.env.DATA_DIR ?? new URL("./data", import.meta.url).pathname) + "/replays";
+const MAX_REPLAYS = 200;
+mkdirSync(REPLAYS, { recursive: true });
 
 // ------------------------------------------------------------------ broker publisher (queue + batch, one request in flight)
 const queue = [];
@@ -42,6 +48,36 @@ async function flush() {
   flushing = false;
 }
 
+// ------------------------------------------------------------------ replays
+const replays = []; // summaries, newest first
+async function loadReplays() {
+  for (const f of await readdir(REPLAYS)) {
+    if (!f.endsWith(".json")) continue;
+    try { const r = JSON.parse(await readFile(`${REPLAYS}/${f}`, "utf8")); replays.push(summary(r)); } catch {}
+  }
+  replays.sort((a, b) => b.date - a.date);
+}
+const summary = (r) => ({ id: r.id, date: r.date, minutes: r.minutes, winner: r.winner, players: r.players, playable: r.sim === SIM_HASH });
+async function saveReplay(room) {
+  const s = room.sim;
+  if (room.saved || room.replay || !room.slots.some((x) => !x.ai) || s.time < 60) return null; // only real games of 1+ minute
+  room.saved = true;
+  const r = { v: 1, id: room.id, sim: SIM_HASH, date: Date.now(), seed: s.seed, ticks: s.tick, minutes: +(s.time / 60).toFixed(1),
+    winner: s.winner != null ? s.players[s.winner].name : null, players: s.players.map((p) => ({ name: p.name, color: p.color, ai: p.ai?.diff ?? null })),
+    cmds: room.rec, stats: gameStats(s) };
+  try {
+    await writeFile(`${REPLAYS}/${r.id}.json`, JSON.stringify(r));
+    replays.unshift(summary(r));
+    for (const old of replays.splice(MAX_REPLAYS)) unlink(`${REPLAYS}/${old.id}.json`).catch(() => {});
+    return r.id;
+  } catch (e) { console.warn("replay save failed", e.message); return null; }
+}
+async function finish(room) { // game over (or replay end): stats + replay link to everyone still connected
+  const id = await saveReplay(room);
+  const m = { t: "stats", ...gameStats(room.sim), replay: room.replay ? room.replay.id : id };
+  sendRoom(room, m); for (const w of room.watchers ?? []) if (w.readyState === 1) w.send(JSON.stringify(m));
+}
+
 // ------------------------------------------------------------------ rooms
 const rooms = new Map();
 const code = () => { const A = "ABCDEFGHJKLMNPQRSTUVWXYZ"; let c; do { c = Array.from({ length: 4 }, () => A[(Math.random() * A.length) | 0]).join(""); } while (rooms.has(c)); return c; };
@@ -52,42 +88,52 @@ function lobbyState(room) {
 }
 function sendRoom(room, msg) { const m = JSON.stringify(msg); for (const s of room.slots) if (s.ws?.readyState === 1) s.ws.send(m); }
 
-function startRoom(room) {
-  room.sim = createGame({ players: room.slots.map((s) => ({ name: s.name, ai: s.ai })) });
-  room.id = randomUUID().slice(0, 8);
+function startRoom(room, seed) {
+  room.sim = createGame({ seed, players: room.slots.map((s) => ({ name: s.name, ai: s.ai })) });
+  room.id = randomUUID().replace(/-/g, "").slice(0, 10);
+  room.rec = []; // [tick, player, command]
   const map = JSON.stringify(mapInfo(room.sim));
   room.slots.forEach((s, i) => { if (s.ws?.readyState === 1) { s.ws.send(map); s.ws.send(JSON.stringify({ t: "start", me: i })); } });
   for (const w of room.watchers ?? []) if (w.readyState === 1) { w.send(map); w.send(JSON.stringify({ t: "start", me: -1 })); }
   room.timer = setInterval(() => tickRoom(room), TICK * 1000);
 }
+function apply(s, pid, c) { try { command(s, pid, c); } catch (e) { console.warn("bad command", e.message); } }
 function tickRoom(room) {
   const s = room.sim;
   for (const [pid, c] of room.inbox.splice(0)) {
-    try {
-      if (c.ids !== undefined && (!Array.isArray(c.ids) || c.ids.length > 200)) continue;
-      for (const f of ["x", "y"]) if (c[f] !== undefined) c[f] = Number(c[f]) || 0;
-      if (c.t === "build" || c.t === "tree") { c.x = Math.floor(c.x); c.y = Math.floor(c.y); }
-      command(s, pid, c);
-    } catch (e) { console.warn("bad command", e.message); }
+    if (c.ids !== undefined && (!Array.isArray(c.ids) || c.ids.length > 200 || !c.ids.every(Number.isInteger))) continue;
+    for (const f of ["x", "y"]) if (c[f] !== undefined) c[f] = Number(c[f]) || 0;
+    if (c.t === "build" || c.t === "tree") { c.x = Math.floor(c.x); c.y = Math.floor(c.y); }
+    const clean = { t: String(c.t), ids: c.ids, id: c.id, kind: c.kind, slot: c.slot, x: c.x, y: c.y }; // only known fields go into the replay
+    for (const k of Object.keys(clean)) if (clean[k] === undefined) delete clean[k];
+    room.rec.push([s.tick, pid, clean]);
+    apply(s, pid, clean);
   }
   for (let n = 0; n < (room.speed ?? 1); n++) {
+    if (room.replay) { // feed the recorded commands at the tick they were applied
+      const r = room.replay;
+      while (r.i < r.cmds.length && r.cmds[r.i][0] <= s.tick) { const [, pid, c] = r.cmds[r.i++]; apply(s, pid, c); }
+      if (s.tick >= r.ticks) { if (!room.endAt) { room.endAt = Date.now() + 60000; finish(room); } break; } // recording ends here
+    }
     try { step(s); } catch (e) { console.error("sim error", e); closeRoom(room); sendRoom(room, { t: "error", msg: "The game crashed, sorry." }); return; }
-    for (const ev of s.events) publish(room.id, ev);
+    if (!room.replay) for (const ev of s.events) publish(room.id, ev);
     s.events = [];
+    if (s.over) break;
   }
   room.slots.forEach((slot, i) => { if (slot.ws?.readyState === 1) slot.ws.send(JSON.stringify(snapshot(s, i))); });
   if (room.watchers?.length) { const m = JSON.stringify(snapshot(s, -1)); for (const w of room.watchers) if (w.readyState === 1) w.send(m); }
-  if (s.over && !room.endAt) room.endAt = Date.now() + 30000;
+  if (s.over && !room.endAt) { room.endAt = Date.now() + (room.replay ? 60000 : 30000); finish(room); }
   const anyone = room.slots.some((x) => x.ws?.readyState === 1) || room.watchers?.some((w) => w.readyState === 1);
   if ((room.endAt && Date.now() > room.endAt) || !anyone) closeRoom(room);
 }
-function closeRoom(room) { clearInterval(room.timer); rooms.delete(room.code); }
+function closeRoom(room) { clearInterval(room.timer); rooms.delete(room.code); if (room.sim && !room.sim.over) saveReplay(room); }
 
 // ------------------------------------------------------------------ http + ws
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json" };
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   if (url.pathname === "/health") return res.end("ok");
+  if (url.pathname === "/api/replays") return res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" }).end(JSON.stringify(replays.slice(0, 50)));
   let path = url.pathname === "/" ? "/public/index.html" : url.pathname;
   if (path.startsWith("/shared/")) path = path; else if (!path.startsWith("/public/")) path = "/public" + path;
   if (path.includes("..")) return res.writeHead(400).end();
@@ -118,6 +164,21 @@ wss.on("connection", (ws) => {
     if (m.t === "cmd") { if (room?.sim && pid >= 0 && m.c && typeof m.c === "object") room.inbox.push([pid, m.c]); return; }
     if (room && m.t !== "addAI" && m.t !== "start" && m.t !== "kick" && m.t !== "speed") return;
     switch (m.t) {
+      case "replay": {
+        if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
+        const id = String(m.id ?? "");
+        if (!/^[a-f0-9]{8,12}$/.test(id) || !replays.some((r) => r.id === id)) return reply({ t: "error", msg: "Replay not found." });
+        room = { code: code(), slots: [], inbox: [], watchers: [ws], speed: [1, 2, 4, 8].includes(+m.speed) ? +m.speed : 2 };
+        rooms.set(room.code, room);
+        readFile(`${REPLAYS}/${id}.json`, "utf8").then((txt) => {
+          const r = JSON.parse(txt);
+          if (r.sim !== SIM_HASH) { rooms.delete(room.code); room = null; return reply({ t: "error", msg: "This replay was recorded with an older version of the game and can't be played back." }); }
+          room.slots = r.players.map((p) => ({ name: p.name, ai: p.ai }));
+          room.replay = { id, cmds: r.cmds, ticks: r.ticks, i: 0 };
+          if (ws.readyState === 1) startRoom(room, r.seed); else rooms.delete(room.code);
+        }).catch(() => { rooms.delete(room.code); room = null; reply({ t: "error", msg: "Replay not found." }); });
+        break;
+      }
       case "watch": {
         if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
         const diff = ["easy", "normal", "hard"].includes(m.diff) ? m.diff : "normal";
@@ -174,9 +235,10 @@ wss.on("connection", (ws) => {
       if (!room.slots.some((s) => s.ws)) rooms.delete(room.code); else sendRoom(room, lobbyState(room));
     } else {
       const i = room.slots.findIndex((s) => s.ws === ws);
-      if (i >= 0) { room.slots[i].ws = null; command(room.sim, i, { t: "resign" }); } // leaving a running game = resign
+      if (i >= 0) { room.slots[i].ws = null; room.inbox.push([i, { t: "resign" }]); } // leaving a running game = resign (recorded like any command)
     }
   });
 });
 
+await loadReplays();
 server.listen(PORT, () => console.log(`Ember Realms on :${PORT}, events -> ${BROKER ? TOPIC : "(broker off)"}`));

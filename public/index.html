@@ -55,6 +55,23 @@ input, select { font: 14px var(--body); background: #241b13; color: var(--ink); 
 .err { color: var(--bad); font-weight: 700; min-height: 1.2em; }
 .code { font: 900 34px var(--display); letter-spacing: .2em; color: var(--gold); }
 [hidden] { display: none !important; }
+#end .card { width: min(860px, 100%); }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: -1px; }
+table.stats { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+table.stats th, table.stats td { padding: 5px 8px; border-bottom: 1px solid rgba(107,85,55,.5); text-align: right; white-space: nowrap; }
+table.stats th:first-child, table.stats td:nth-child(2) { text-align: left; }
+table.stats thead th { color: var(--muted); font-weight: 700; }
+.legend { display: flex; gap: 14px; justify-content: center; font-size: 13px; }
+.charts { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+.charts figure { margin: 0; position: relative; flex: 1 1 340px; max-width: 400px; text-align: left; }
+.charts figcaption { font: 700 14px var(--display); margin-bottom: 2px; }
+.charts svg { width: 100%; height: auto; display: block; }
+.charts svg text { fill: var(--muted); font: 10.5px var(--body); }
+.charts svg text.lbl { fill: var(--ink); font-weight: 700; }
+.charts .grid { stroke: rgba(183,169,140,.18); stroke-width: 1; }
+.charts .cross { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.charts .tip { position: absolute; top: 22px; background: #241b13; border: 1px solid var(--edge); border-radius: 6px; padding: 6px 9px; font-size: 12px; pointer-events: none; white-space: nowrap; z-index: 2; }
+.charts .tip div { display: flex; align-items: center; gap: 2px; } .charts .tip span { margin-left: auto; padding-left: 10px; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -74,7 +91,7 @@ input, select { font: 14px var(--body); background: #241b13; color: var(--ink); 
   <button id="mute">Sound on</button>
   <button id="resign">Resign</button>
 </div>
-<div class="hud" id="help" hidden>Drag to select · Right-click (touchpad: two-finger click or Ctrl+click) to move, gather, build, attack · <b>Q W E R</b> build/train · <b>A</b> attack-move · <b>.</b> idle villager · <b>H</b> town centre · <b>Space</b> jump to attack · <b>M</b> sound · arrows / screen edge / two-finger swipe to scroll · wheel, pinch or +/- to zoom</div>
+<div class="hud" id="help" hidden>Drag to select · Right-click (touchpad: two-finger click or Ctrl+click) to move, gather, build, attack · <b>Q W E R T Y</b> build/train/research · <b>A</b> attack-move · <b>.</b> idle villager · <b>H</b> town centre · <b>Space</b> jump to attack · <b>M</b> sound · arrows / screen edge / two-finger swipe to scroll · wheel, pinch or +/- to zoom</div>
 <div class="hud" id="bottom" hidden><div id="info"></div><div id="cmds"></div></div>
 <div class="hud" id="mini" hidden><canvas id="minimap" width="200" height="100"></canvas></div>
 <div class="hud" id="toast"></div>
@@ -96,6 +113,10 @@ input, select { font: 14px var(--body); background: #241b13; color: var(--ink); 
       <button class="big" id="create">Create game</button>
       <input id="joinCode" maxlength="4" placeholder="CODE" style="width:90px;text-transform:uppercase">
       <button id="join">Join</button>
+    </div>
+    <div id="replays" hidden style="display:grid;gap:6px">
+      <h2>Recent games</h2>
+      <div id="replayList" style="display:grid;gap:6px"></div>
     </div>
     <div class="err" id="err"></div>
   </div>
@@ -121,6 +142,7 @@ input, select { font: 14px var(--body); background: #241b13; color: var(--ink); 
   <div class="card" style="text-align:center">
     <h1 id="endTitle">Victory</h1>
     <p id="endText"></p>
+    <div id="stats" style="display:grid;gap:12px"></div>
     <div class="row" style="justify-content:center"><button class="big" id="again">Back to menu</button></div>
   </div>
 </div>

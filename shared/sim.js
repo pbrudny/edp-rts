@@ -8,19 +8,48 @@ export const MAX_POP = 60;
 export const COLORS = ["#3b82f6", "#ef4444", "#eab308", "#a855f7"];
 export const RES = ["food", "wood", "gold"];
 
+// armor = against melee, pierce = against arrows (archers, town centres). bonus = extra damage against a kind (or "building").
 export const KINDS = {
-  villager:  { type: "unit", hp: 25, atk: 3, range: 0.9, cd: 1.5, speed: 2.3, armor: 0, cost: { food: 50 }, time: 10, sight: 6 },
-  swordsman: { type: "unit", hp: 65, atk: 8, range: 0.9, cd: 1.2, speed: 2.0, armor: 1, cost: { food: 60, gold: 20 }, time: 14, sight: 6 },
-  archer:    { type: "unit", hp: 35, atk: 5, range: 5, cd: 1.6, speed: 2.2, armor: 0, cost: { wood: 30, gold: 40 }, time: 14, sight: 7 },
-  tc:         { type: "building", w: 3, h: 3, hp: 1400, pop: 5, drop: ["food", "wood", "gold"], atk: 5, range: 7, cd: 2, trains: ["villager"], time: 60, cost: { wood: 400, gold: 150 } },
+  villager:  { type: "unit", hp: 25, atk: 3, range: 0.9, cd: 1.5, speed: 2.3, armor: 0, pierce: 0, cost: { food: 50 }, time: 10, sight: 6 },
+  swordsman: { type: "unit", hp: 65, atk: 8, range: 0.9, cd: 1.2, speed: 2.0, armor: 1, pierce: 1, cost: { food: 60, gold: 20 }, time: 14, sight: 6, bonus: { spearman: 4, building: 3 } },
+  spearman:  { type: "unit", hp: 45, atk: 4, range: 0.9, cd: 1.3, speed: 2.1, armor: 0, pierce: 0, cost: { food: 35, wood: 25 }, time: 10, sight: 6, bonus: { cavalry: 11, ram: 4 } },
+  archer:    { type: "unit", hp: 35, atk: 5, range: 5, cd: 1.6, speed: 2.2, armor: 0, pierce: 0, cost: { wood: 30, gold: 40 }, time: 14, sight: 7, bonus: { spearman: 3 } },
+  cavalry:   { type: "unit", hp: 110, atk: 7, range: 0.9, cd: 1.3, speed: 3.3, armor: 1, pierce: 2, cost: { food: 80, gold: 60 }, time: 18, sight: 8, bonus: { archer: 6, ram: 10 } },
+  ram:       { type: "unit", hp: 200, atk: 60, range: 0.9, cd: 3, speed: 1.2, armor: 0, pierce: 8, cost: { wood: 160, gold: 70 }, time: 24, sight: 5, siege: true },
+  tc:         { type: "building", w: 3, h: 3, hp: 1400, pop: 5, drop: ["food", "wood", "gold"], atk: 5, range: 7, cd: 2, trains: ["villager"], researches: ["wheelbarrow"], time: 60, cost: { wood: 400, gold: 150 } },
   house:      { type: "building", w: 2, h: 2, hp: 350, pop: 5, cost: { wood: 30 }, time: 12 },
-  barracks:   { type: "building", w: 3, h: 3, hp: 700, cost: { wood: 150 }, time: 30, trains: ["swordsman", "archer"] },
-  storehouse: { type: "building", w: 2, h: 2, hp: 450, drop: ["wood", "gold"], cost: { wood: 100 }, time: 18 },
+  barracks:   { type: "building", w: 3, h: 3, hp: 700, cost: { wood: 150 }, time: 30, trains: ["swordsman", "spearman", "archer", "cavalry"] },
+  storehouse: { type: "building", w: 2, h: 2, hp: 450, drop: ["wood", "gold"], cost: { wood: 100 }, time: 18, researches: ["axes", "mining"] },
   farm:       { type: "building", w: 2, h: 2, hp: 120, cost: { wood: 60 }, time: 10, food: 300 },
+  workshop:   { type: "building", w: 3, h: 3, hp: 650, cost: { wood: 175, gold: 50 }, time: 35, trains: ["ram"], researches: ["forging", "fletching", "chainmail"] },
   gold:    { type: "resource", w: 2, h: 2, amount: 800, res: "gold" },
   berries: { type: "resource", w: 1, h: 1, amount: 150, res: "food" },
 };
-export const BUILDABLE = ["house", "barracks", "storehouse", "farm"];
+export const BUILDABLE = ["house", "barracks", "storehouse", "farm", "workshop"];
+
+// upgrades: researched once per player in a building's queue, like training a unit (no population needed)
+export const TECHS = {
+  forging:     { name: "Forging", desc: "+2 attack for swordsmen, spearmen and cavalry", cost: { food: 150, gold: 100 }, time: 30 },
+  fletching:   { name: "Fletching", desc: "+1 attack and +1 range for archers and town centres", cost: { food: 100, wood: 50, gold: 75 }, time: 30 },
+  chainmail:   { name: "Chain mail", desc: "+1 armour and +1 arrow armour for soldiers", cost: { food: 150, gold: 150 }, time: 40 },
+  wheelbarrow: { name: "Wheelbarrow", desc: "Villagers carry 15 instead of 10 and walk 10% faster", cost: { food: 150, wood: 75 }, time: 30 },
+  axes:        { name: "Double-bit axe", desc: "+20% wood gathering", cost: { food: 100, wood: 50 }, time: 20 },
+  mining:      { name: "Gold mining", desc: "+20% gold gathering", cost: { food: 100, wood: 75 }, time: 20 },
+};
+const MELEE = ["swordsman", "spearman", "cavalry"], SOLDIERS = ["swordsman", "spearman", "archer", "cavalry"];
+export const costOf = (item) => (KINDS[item] ?? TECHS[item]).cost;
+export const timeOf = (item) => (KINDS[item] ?? TECHS[item]).time;
+// a unit/building stat after the owner's upgrades (`techs` = { techId: 1 })
+export function stat(techs, kind, key) {
+  let v = KINDS[kind][key] ?? 0;
+  const has = (t) => !!techs?.[t];
+  if (key === "atk") { if (has("forging") && MELEE.includes(kind)) v += 2; if (has("fletching") && (kind === "archer" || kind === "tc")) v += 1; }
+  if (key === "range" && has("fletching") && (kind === "archer" || kind === "tc")) v += 1;
+  if ((key === "armor" || key === "pierce") && has("chainmail") && SOLDIERS.includes(kind)) v += 1;
+  if (key === "speed" && has("wheelbarrow") && kind === "villager") v *= 1.1;
+  return v;
+}
+const carryOf = (p) => (p.techs.wheelbarrow ? 15 : CARRY);
 const RATE = { berries: 0.9, farm: 0.6, wood: 0.75, gold: 0.65 };
 const DIFF = { easy: { gather: 0.75, wave: 10, think: 2.0 }, normal: { gather: 1.0, wave: 7, think: 1.0 }, hard: { gather: 1.3, wave: 6, think: 0.6 } };
 
@@ -111,11 +140,12 @@ function astar(s, sx, sy, isGoal, hx, hy, maxNodes = 5000) {
 export function createGame({ seed = Date.now() % 1e9, players }) {
   const R = rng(seed);
   const s = {
-    seed, w: MAP, h: MAP, tick: 0, time: 0, nextId: 1, over: false, winner: null,
+    seed, rand: rng(seed ^ 0x5bd1e995), w: MAP, h: MAP, tick: 0, time: 0, nextId: 1, over: false, winner: null, timeline: [],
     tile: new Uint8Array(MAP * MAP), wood: new Float32Array(MAP * MAP), occ: new Int32Array(MAP * MAP),
     ents: new Map(), events: [], fx: [], treeChanges: [],
     players: players.map((p, i) => ({ id: i, name: p.name, color: COLORS[i], ai: p.ai ? { diff: p.ai, think: 0, wave: 0 } : null,
-      res: { food: 200, wood: 200, gold: 100 }, alive: true, stats: { trained: 0, killed: 0, lost: 0, gathered: 0 } })),
+      res: { food: 200, wood: 200, gold: 100 }, alive: true, techs: {},
+      stats: { trained: 0, villagers: 0, military: 0, killed: 0, lost: 0, gathered: 0, food: 0, wood: 0, gold: 0, built: 0, techs: 0 } })),
   };
   const starts = [[12, 12], [67, 67], [67, 12], [12, 67]].slice(0, players.length);
   const nearStart = (x, y, r) => starts.some(([sx, sy]) => Math.hypot(x - sx, y - sy) < r);
@@ -182,7 +212,7 @@ export function command(s, pid, c) {
     case "target": {
       const t = s.ents.get(c.id); if (!t) return;
       for (const u of units) {
-        if (t.owner !== pid && t.owner >= 0) setOrder(u, { type: "attack", id: t.id });
+        if (t.owner !== pid && t.owner >= 0 && !(KINDS[u.kind].siege && isUnit(t))) setOrder(u, { type: "attack", id: t.id });
         else if (u.kind === "villager" && isBuilding(t) && t.owner === pid && t.built < 1) setOrder(u, { type: "build", id: t.id });
         else if (u.kind === "villager" && (isResource(t) || (t.kind === "farm" && t.owner === pid))) setOrder(u, { type: "gather", id: t.id });
         else if (u.kind === "villager" && isBuilding(t) && t.owner === pid && u.carry) setOrder(u, { type: "return", drop: t.id });
@@ -212,19 +242,21 @@ export function command(s, pid, c) {
       s.events.push({ type: "building_placed", player: p.name, building: c.kind });
       break;
     }
-    case "train": {
+    case "train": { // a unit, or an upgrade (research)
       const b = mine(c.id);
-      if (!b || !isBuilding(b) || b.built < 1 || !(KINDS[b.kind].trains ?? []).includes(c.kind) || b.queue.length >= 5) return;
-      const k = KINDS[c.kind];
-      if (!afford(p, k.cost)) return;
-      pay(p, k.cost); b.queue.push(c.kind);
+      if (!b || !isBuilding(b) || b.built < 1 || b.queue.length >= 5) return;
+      const kb = KINDS[b.kind];
+      if (TECHS[c.kind]) { if (!(kb.researches ?? []).includes(c.kind) || p.techs[c.kind] || researching(s, pid, c.kind)) return; }
+      else if (!(kb.trains ?? []).includes(c.kind)) return;
+      if (!afford(p, costOf(c.kind))) return;
+      pay(p, costOf(c.kind)); b.queue.push(c.kind);
       break;
     }
     case "cancel": {
       const b = mine(c.id);
       if (!b || !b.queue?.length) return;
       const kind = b.queue.pop(); if (b.queue.length === 0) b.prog = 0;
-      refund(p, KINDS[kind].cost);
+      refund(p, costOf(kind));
       break;
     }
     case "rally": { const b = mine(c.id); if (b && isBuilding(b)) b.rally = { x: c.x, y: c.y }; break; }
@@ -232,6 +264,7 @@ export function command(s, pid, c) {
     case "resign": defeat(s, pid, "resigned"); break;
   }
 }
+export const researching = (s, pid, tech) => [...s.ents.values()].some((e) => e.owner === pid && e.queue?.includes(tech));
 const afford = (p, cost) => Object.entries(cost).every(([r, v]) => p.res[r] >= v);
 const pay = (p, cost) => { for (const [r, v] of Object.entries(cost)) p.res[r] -= v; };
 const refund = (p, cost) => { for (const [r, v] of Object.entries(cost)) p.res[r] += v; };
@@ -260,6 +293,7 @@ export function step(s) {
     else if (isBuilding(e)) updateBuilding(s, e, pops);
   }
   separate(s);
+  if (s.tick % 100 === 0) sample(s);
   // deaths
   for (const e of [...s.ents.values()]) {
     if (e.hp > 0 && !(isResource(e) && e.amount <= 0) && !(e.kind === "farm" && e.food <= 0)) continue;
@@ -275,9 +309,19 @@ export function step(s) {
   for (const p of s.players) if (p.alive && ![...s.ents.values()].some((e) => e.owner === p.id && isBuilding(e))) defeat(s, p.id, "no buildings left");
   const alive = s.players.filter((p) => p.alive);
   if (alive.length <= 1 && s.players.length > 1) {
-    s.over = true; s.winner = alive[0]?.id ?? null;
+    s.over = true; s.winner = alive[0]?.id ?? null; sample(s);
     s.events.push({ type: "game_over", winner: alive[0]?.name ?? null, minutes: +(s.time / 60).toFixed(1) });
   }
+}
+
+// one point per player every 10 s for the end-of-game charts: [villagers, army, food, wood, gold gathered so far]
+function sample(s) {
+  const n = s.players.map(() => [0, 0]);
+  for (const e of s.ents.values()) if (e.owner >= 0 && isUnit(e)) n[e.owner][e.kind === "villager" ? 0 : 1]++;
+  s.timeline.push({ t: Math.round(s.time), p: s.players.map((p, i) => [n[i][0], n[i][1], p.stats.food, p.stats.wood, p.stats.gold]) });
+}
+export function gameStats(s) {
+  return { time: Math.round(s.time), winner: s.winner, players: s.players.map((p) => ({ name: p.name, color: p.color, ai: p.ai?.diff ?? null, alive: p.alive, ...p.stats, techs: Object.keys(p.techs) })), timeline: s.timeline };
 }
 
 function defeat(s, pid, reason) {
@@ -290,33 +334,40 @@ function defeat(s, pid, reason) {
 function updateBuilding(s, b, pops) {
   const k = KINDS[b.kind];
   if (b.built < 1) return;
+  const p = s.players[b.owner];
   if (b.queue.length) {
-    const { pop, cap } = pops[b.owner];
-    if (b.prog > 0 || pop < cap) {
+    const { pop, cap } = pops[b.owner], item = b.queue[0], tech = TECHS[item];
+    if (tech || b.prog > 0 || pop < cap) {
       b.prog += TICK;
-      if (b.prog >= KINDS[b.queue[0]].time) {
-        const kind = b.queue.shift(); b.prog = 0; pops[b.owner].pop++;
-        const u = spawnUnit(s, kind, b.owner, b.x + b.w / 2, b.y + b.h + 0.5);
-        const p = s.players[b.owner]; p.stats.trained++;
-        if (b.rally) setOrder(u, { type: kind === "villager" ? "move" : "attackMove", x: b.rally.x, y: b.rally.y });
-        s.events.push({ type: "unit_trained", player: p.name, unit: kind });
+      if (b.prog >= timeOf(item)) {
+        b.queue.shift(); b.prog = 0;
+        if (tech) {
+          p.techs[item] = 1; p.stats.techs++;
+          s.events.push({ type: "tech_researched", player: p.name, tech: item });
+        } else {
+          pops[b.owner].pop++;
+          const u = spawnUnit(s, item, b.owner, b.x + b.w / 2, b.y + b.h + 0.5);
+          p.stats.trained++; p.stats[item === "villager" ? "villagers" : "military"]++;
+          if (b.rally) setOrder(u, { type: item === "villager" ? "move" : "attackMove", x: b.rally.x, y: b.rally.y });
+          s.events.push({ type: "unit_trained", player: p.name, unit: item });
+        }
       }
     }
   }
   if (k.atk) {
     b.cool -= TICK;
     if (b.cool <= 0) {
-      const t = nearestEnemy(s, b.owner, b.x + b.w / 2, b.y + b.h / 2, k.range, true);
-      if (t) { hit(s, b, t, k.atk); b.cool = k.cd; s.fx.push([b.x + b.w / 2, b.y + b.h / 2, t.x, t.y]); }
+      const t = nearestEnemy(s, b.owner, b.x + b.w / 2, b.y + b.h / 2, stat(p.techs, b.kind, "range"), true);
+      if (t) { hit(s, b, t, stat(p.techs, b.kind, "atk")); b.cool = k.cd; s.fx.push([b.x + b.w / 2, b.y + b.h / 2, t.x, t.y]); }
     }
   }
 }
 
-function nearestEnemy(s, owner, x, y, range, unitsOnly = false) {
+function nearestEnemy(s, owner, x, y, range, unitsOnly = false, buildingsOnly = false) {
   let best = null, bd = range;
   for (const e of s.ents.values()) {
     if (e.owner < 0 || e.owner === owner || e.hp <= 0 || !s.players[e.owner]?.alive) continue;
-    if (unitsOnly && !isUnit(e)) continue;
+    if ((unitsOnly && !isUnit(e)) || (buildingsOnly && isUnit(e))) continue;
     let d = isUnit(e) ? Math.hypot(e.x - x, e.y - y) : distToRect(x, y, e) + 1.5; // prefer units over buildings
     if (d < bd) { bd = d; best = e; }
   }
@@ -324,9 +375,13 @@ function nearestEnemy(s, owner, x, y, range, unitsOnly = false) {
 }
 
 function hit(s, a, t, atk) {
-  t.hp -= Math.max(1, atk - (KINDS[t.kind].armor ?? 0));
+  const ka = KINDS[a.kind];
+  const ranged = isBuilding(a) || ka.range > 2;
+  const bonus = (ka.bonus?.[t.kind] ?? 0) + (isBuilding(t) ? ka.bonus?.building ?? 0 : 0);
+  const def = stat(s.players[t.owner]?.techs, t.kind, ranged ? "pierce" : "armor");
+  t.hp -= Math.max(1, atk + bonus - def);
   t.lastHitBy = a.owner;
-  if (isUnit(t) && t.kind !== "villager" && !t.order) setOrder(t, { type: "attack", id: a.id });
+  if (isUnit(t) && t.kind !== "villager" && !KINDS[t.kind].siege && !t.order) setOrder(t, { type: "attack", id: a.id });
 }
 
 function dropsite(s, u, res) {
@@ -377,7 +432,7 @@ function approach(s, u, goal, range) {
     if (!u.path.length) { u.stuck = (u.stuck ?? 0) + 1; return false; }
   }
   if (!u.path.length) return false;
-  let budget = KINDS[u.kind].speed * TICK;
+  let budget = stat(s.players[u.owner].techs, u.kind, "speed") * TICK;
   while (budget > 0 && u.path.length) {
     const n = u.path[0];
     if (blocked(s, Math.floor(n.x), Math.floor(n.y))) { u.path = null; break; }
@@ -396,11 +451,12 @@ function updateUnit(s, u) {
   u.cool -= TICK; u.moving = false; u.anim = null;
   const p = s.players[u.owner];
   const mult = p.ai ? DIFF[p.ai.diff].gather : 1;
+  const carry = carryOf(p), range = stat(p.techs, u.kind, "range");
 
-  // military: auto-acquire targets
+  // military: auto-acquire targets (rams only look for buildings)
   if (u.kind !== "villager" && (!o || o.type === "attackMove") && (u.scan -= TICK) <= 0) {
     u.scan = 0.5;
-    const t = nearestEnemy(s, u.owner, u.x, u.y, k.sight);
+    const t = nearestEnemy(s, u.owner, u.x, u.y, k.sight, false, !!k.siege);
     if (t) { u.prev = o; u.order = { type: "attack", id: t.id, auto: true }; u.path = null; }
   }
   if (!u.order) { u.idle += TICK; return; }
@@ -416,11 +472,11 @@ function updateUnit(s, u) {
       break;
     case "attack": {
       const t = s.ents.get(ord.id);
-      if (!t || t.hp <= 0 || (u.kind !== "villager" && ord.auto && distTo(u, t) > k.sight + 3)) { u.order = u.prev ?? null; u.prev = null; u.path = null; break; }
+      if (!t || t.hp <= 0 || (k.siege && isUnit(t)) || (u.kind !== "villager" && ord.auto && distTo(u, t) > k.sight + 3)) { u.order = u.prev ?? null; u.prev = null; u.path = null; break; }
       const goal = isUnit(t) ? { x: t.x, y: t.y, moving: true } : { rect: t };
-      if (approach(s, u, goal, k.range)) {
+      if (approach(s, u, goal, range)) {
         u.anim = "attack"; u.face = Math.atan2(centre(t).y - u.y, centre(t).x - u.x);
-        if (u.cool <= 0) { hit(s, u, t, k.atk); u.cool = k.cd; if (k.range > 2) s.fx.push([u.x, u.y, centre(t).x, centre(t).y]); }
+        if (u.cool <= 0) { hit(s, u, t, stat(p.techs, u.kind, "atk")); u.cool = k.cd; if (range > 2) s.fx.push([u.x, u.y, centre(t).x, centre(t).y]); }
       }
       break;
     }
@@ -433,7 +489,7 @@ function updateUnit(s, u) {
         b.built = Math.min(1, b.built + TICK / kb.time);
         b.hp = Math.min(kb.hp, b.hp + (kb.hp * 0.9 * TICK) / kb.time);
         if (b.built >= 1) {
-          s.events.push({ type: "building_completed", player: p.name, building: b.kind });
+          s.events.push({ type: "building_completed", player: p.name, building: b.kind }); p.stats.built++;
           u.order = b.kind === "farm" ? { type: "gather", id: b.id } : null;
         }
       }
@@ -441,13 +497,13 @@ function updateUnit(s, u) {
     }
     case "gather": case "tree": {
       const res = ord.type === "tree" ? "wood" : s.ents.get(ord.id) ? (KINDS[s.ents.get(ord.id).kind].res ?? "food") : null;
-      if (u.carry && (u.carry.type !== res || u.carry.amt >= CARRY)) { u.resume = ord; u.order = { type: "return" }; break; }
+      if (u.carry && (u.carry.type !== res || u.carry.amt >= carry)) { u.resume = ord; u.order = { type: "return" }; break; }
       if (ord.type === "tree") {
         const i = idx(s, ord.x, ord.y);
         if (s.wood[i] <= 0 || (u.stuck > 2 && !exposedTree(s, ord.x, ord.y))) { const n = nearestResource(s, u, "wood", ord.x, ord.y, 8); u.order = n; u.path = null; u.stuck = 0; break; }
         if (approach(s, u, { rect: { x: ord.x, y: ord.y, w: 1, h: 1 } }, 1.0)) {
           u.anim = "gather"; u.face = Math.atan2(ord.y + 0.5 - u.y, ord.x + 0.5 - u.x);
-          const amt = RATE.wood * mult * TICK;
+          const amt = RATE.wood * mult * (p.techs.axes ? 1.2 : 1) * TICK;
           u.carry = { type: "wood", amt: (u.carry?.amt ?? 0) + amt };
           s.wood[i] -= amt;
           if (s.wood[i] <= 0) { s.wood[i] = 0; s.treeChanges.push(i); }
@@ -459,12 +515,12 @@ function updateUnit(s, u) {
         }
         if (approach(s, u, { rect: t }, 1.0)) {
           u.anim = "gather"; u.face = Math.atan2(t.y + t.h / 2 - u.y, t.x + t.w / 2 - u.x);
-          const amt = RATE[t.kind === "farm" ? "farm" : t.kind === "berries" ? "berries" : "gold"] * mult * TICK;
+          const amt = RATE[t.kind === "farm" ? "farm" : t.kind === "berries" ? "berries" : "gold"] * mult * (t.kind === "gold" && p.techs.mining ? 1.2 : 1) * TICK;
           u.carry = { type: res, amt: (u.carry?.amt ?? 0) + amt };
           if (t.kind === "farm") t.food -= amt; else t.amount -= amt;
         }
       }
-      if (u.carry?.amt >= CARRY) { u.resume = u.order; u.order = { type: "return" }; }
+      if (u.carry?.amt >= carry) { u.resume = u.order; u.order = { type: "return" }; }
       break;
     }
     case "return": {
@@ -473,7 +529,7 @@ function updateUnit(s, u) {
       if (!d || !(KINDS[d.kind].drop ?? []).includes(u.carry.type)) { if (ord.drop) { u.order = { type: "return" }; break; } u.order = null; break; }
       if (approach(s, u, { rect: d }, 1.0)) {
         const amt = Math.floor(u.carry.amt);
-        p.res[u.carry.type] += amt; p.stats.gathered += amt;
+        p.res[u.carry.type] += amt; p.stats.gathered += amt; p.stats[u.carry.type] += amt;
         u.carry = null; u.order = u.resume ?? null; u.resume = null; u.path = null;
       }
       break;
@@ -540,12 +596,20 @@ function runAI(s, p) {
     return true;
   };
 
+  // upgrades (economy and military), keeping a reserve so units still get trained
+  const reserve = ai.diff === "easy" ? 150 : ai.diff === "normal" ? 60 : 0;
+  for (const b of mine.filter((e) => isBuilding(e) && e.built >= 1 && KINDS[e.kind].researches)) {
+    if (b.queue.length || (b.kind === "tc" && vills.length < 12)) continue;
+    const tech = KINDS[b.kind].researches.find((t) => !p.techs[t] && !researching(s, p.id, t));
+    if (tech && Object.entries(TECHS[tech].cost).every(([r, v]) => p.res[r] >= v + reserve)) command(s, p.id, { t: "train", id: b.id, kind: tech });
+  }
   // economy
   if (tc && tc.queue.length === 0 && vills.length < (ai.diff === "easy" ? 12 : 18) && pop < cap) command(s, p.id, { t: "train", id: tc.id, kind: "villager" });
   const building = (kind) => has(kind, true).some((e) => e.built < 1);
   if (cap - pop <= 2 && cap < MAX_POP && !building("house")) build("house");
   else if (vills.length >= 7 && !has("barracks", true).length) build("barracks");
   else if (vills.length >= 10 && !has("storehouse", true).length) build("storehouse");
+  else if (vills.length >= (ai.diff === "easy" ? 11 : 14) && has("barracks").length && !has("workshop", true).length) build("workshop");
   else if (has("barracks").length && has("barracks", true).length < 2 && vills.length >= 15 && p.res.wood > 250) build("barracks");
   // farms when berries near base run out
   const berriesNear = [...s.ents.values()].some((e) => e.kind === "berries" && distToRect(bx, by, e) < 12);
@@ -562,18 +626,28 @@ function runAI(s, p) {
     if (o) { setOrder(v, o); count[res]++; }
   }
 
-  // military production
-  for (const b of has("barracks")) {
+  // military production: counter what the enemies field (s.rand keeps the game replayable)
+  const foe = { swordsman: 0, spearman: 0, archer: 0, cavalry: 0 }; let foeN = 0;
+  for (const e of s.ents.values()) if (e.owner >= 0 && e.owner !== p.id && foe[e.kind] !== undefined) { foe[e.kind]++; foeN++; }
+  const pickUnit = () => {
+    if (foeN >= 4 && foe.cavalry / foeN > 0.3) return "spearman";
+    if (foeN >= 4 && foe.archer / foeN > 0.4) return "cavalry";
+    if (foeN >= 4 && foe.spearman / foeN > 0.4) return s.rand() < 0.5 ? "archer" : "swordsman";
+    const r = s.rand(); return r < 0.3 ? "swordsman" : r < 0.55 ? "archer" : r < 0.8 ? "cavalry" : "spearman";
+  };
+  for (const b of has("barracks")) { // save up for the chosen unit instead of falling back to the cheapest one
     if (b.queue.length >= 2 || pop >= cap) continue;
-    const kind = ai.wave % 2 === 0 ? (p.res.gold >= 40 && p.res.wood >= 30 && Math.random() < 0.5 ? "archer" : "swordsman") : "archer";
-    if (afford(p, KINDS[kind].cost)) command(s, p.id, { t: "train", id: b.id, kind });
-    else if (afford(p, KINDS.swordsman.cost)) command(s, p.id, { t: "train", id: b.id, kind: "swordsman" });
+    ai.want ??= pickUnit();
+    if (afford(p, KINDS[ai.want].cost)) { command(s, p.id, { t: "train", id: b.id, kind: ai.want }); ai.want = null; }
   }
+  const rams = army.filter((e) => e.kind === "ram").length;
+  for (const b of has("workshop"))
+    if (!b.queue.length && pop < cap && army.length >= 6 && rams < 1 + Math.min(2, ai.wave) && afford(p, KINDS.ram.cost)) command(s, p.id, { t: "train", id: b.id, kind: "ram" });
 
   // defend base
   const threat = nearestEnemy(s, p.id, bx, by, 14);
   if (threat) {
-    for (const a of army) if (!a.order || a.order.type !== "attack") setOrder(a, { type: "attack", id: threat.id });
+    for (const a of army) if (!KINDS[a.kind].siege && (!a.order || a.order.type !== "attack")) setOrder(a, { type: "attack", id: threat.id });
     return;
   }
   // attack waves
@@ -597,7 +671,7 @@ function runAI(s, p) {
 
 const KIND_LIST = Object.keys(KINDS);
 // Fog of war: what player `pid` can see now (vis) and has ever seen (explored).
-const BUILD_SIGHT = { tc: 8, barracks: 5, house: 4, storehouse: 5, farm: 3 };
+const BUILD_SIGHT = { tc: 8, barracks: 5, house: 4, storehouse: 5, farm: 3, workshop: 5 };
 export function visibility(s, pid) {
   const vis = new Uint8Array(s.w * s.h);
   if (pid < 0 || pid >= s.players.length) { vis.fill(1); return { vis, ex: vis }; } // spectator
@@ -638,13 +712,13 @@ export function snapshot(s, pid) {
         for (let j = 0; j < e.h && !known; j++) for (let i = 0; i < e.w && !known; i++) if (ex[(e.y + j) * s.w + e.x + i]) known = true;
         if (!known) continue;
       }
-      ents.push([e.id, k, e.owner, e.x, e.y, Math.ceil(e.hp), Math.round((e.built ?? 1) * 100), Math.round(e.amount ?? e.food ?? 0), e.owner === pid && e.queue?.length ? [e.queue, Math.round((e.prog / KINDS[e.queue[0]].time) * 100)] : 0]);
+      ents.push([e.id, k, e.owner, e.x, e.y, Math.ceil(e.hp), Math.round((e.built ?? 1) * 100), Math.round(e.amount ?? e.food ?? 0), e.owner === pid && e.queue?.length ? [e.queue, Math.round((e.prog / timeOf(e.queue[0])) * 100)] : 0]);
     }
   }
   const me = s.players[pid];
   return {
     t: "s", tick: s.tick, time: Math.round(s.time),
-    me: pid, res: me ? { food: Math.floor(me.res.food), wood: Math.floor(me.res.wood), gold: Math.floor(me.res.gold), ...popOf(s, pid) } : null,
+    me: pid, techs: me ? Object.keys(me.techs) : [], res: me ? { food: Math.floor(me.res.food), wood: Math.floor(me.res.wood), gold: Math.floor(me.res.gold), ...popOf(s, pid) } : null,
     players: s.players.map((p) => ({ name: p.name, color: p.color, alive: p.alive, ai: p.ai?.diff ?? null })),
     ents, fx: s.fx.filter((f) => seen(f[0], f[1]) || seen(f[2], f[3])), trees: s.treeChanges, over: s.over, winner: s.winner,
     vis: bits(vis), ex: s.tick % 10 === 1 ? bits(ex) : undefined,

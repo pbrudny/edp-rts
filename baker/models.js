@@ -73,10 +73,67 @@ export function makeUnit(kind) {
     bow.rotation.y = Math.PI / 2; bow.position.set(0.02, 0, 0); h.P.handL.add(bow); h.P.tool = bow;
     return h;
   }
+  if (kind === "spearman") {
+    const h = humanoid({ tunic: TEAM, legs: 0x5a4a36 });
+    const cap = new THREE.Group(); cap.add(at(sph(0.092, 0x7a5532, false, 8, 5), 0, 0.075, 0)); cap.add(at(cyl(0.105, 0.105, 0.02, 0x5e4026, 10), 0, 0.05, 0)); h.P.head.add(cap);
+    h.P.torso.add(at(box(0.16, 0.18, 0.25, 0x8a6a42), 0, 0.22, 0)); // leather jerkin
+    const shield = new THREE.Group(); shield.add(at(box(0.03, 0.26, 0.18, TEAM, true), 0, 0, 0)); shield.add(at(box(0.035, 0.05, 0.05, 0xc9a35a), -0.005, 0, 0));
+    shield.position.set(0.06, 0.02, -0.05); shield.rotation.y = 0.2; h.P.handL.add(shield);
+    const spear = new THREE.Group(); spear.add(at(cyl(0.014, 0.014, 0.95, 0x7a5532, 6), 0, 0.2, 0));
+    const tip = mesh(new THREE.ConeGeometry(0.03, 0.12, 6), mat(0xdfe5ec)); tip.position.y = 0.73; spear.add(tip);
+    h.P.handR.add(spear); h.P.tool = spear;
+    return h;
+  }
+  if (kind === "cavalry") {
+    // horse + rider; the rider reuses the humanoid rig (P.*), the horse adds its own pivots (P.h*)
+    const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
+    const P = {};
+    const horse = new THREE.Group(); body.add(horse); P.horse = horse;
+    const coat = 0x6b4a2e, dark = 0x3a2717;
+    horse.add(at(box(0.62, 0.24, 0.22, coat), 0, 0.5, 0));
+    horse.add(at(box(0.3, 0.05, 0.26, TEAM, true), -0.02, 0.63, 0)); // saddle blanket
+    horse.add(at(box(0.14, 0.06, 0.2, 0x4a2f1a), -0.02, 0.66, 0)); // saddle
+    const neck = at(box(0.14, 0.3, 0.13, coat), 0.33, 0.66, 0); neck.rotation.z = -0.55; horse.add(neck);
+    P.hHead = new THREE.Group(); at(P.hHead, 0.42, 0.8, 0); horse.add(P.hHead);
+    const head = at(box(0.24, 0.1, 0.1, coat), 0.08, -0.02, 0); head.rotation.z = -0.5; P.hHead.add(head);
+    P.hHead.add(at(box(0.06, 0.18, 0.04, dark), -0.04, 0.0, 0)); // mane
+    for (const z of [-0.03, 0.03]) P.hHead.add(at(box(0.03, 0.06, 0.02, coat), -0.02, 0.07, z)); // ears
+    const tail = at(box(0.05, 0.25, 0.06, dark), -0.34, 0.45, 0); tail.rotation.z = -0.35; horse.add(tail); P.hTail = tail;
+    const leg = (x, z) => { const g = new THREE.Group(); const m = cyl(0.035, 0.03, 0.4, coat, 6); m.position.y = -0.2; g.add(m); const hoof = box(0.06, 0.04, 0.06, dark); hoof.position.y = -0.4; g.add(hoof); at(g, x, 0.42, z); horse.add(g); return g; };
+    P.hFL = leg(0.24, -0.07); P.hFR = leg(0.24, 0.07); P.hBL = leg(-0.24, -0.07); P.hBR = leg(-0.24, 0.07);
+    const r = humanoid({ tunic: TEAM, legs: 0x575c63, boots: 0x3a3f45 });
+    at(r.root, -0.02, 0.34, 0); body.add(r.root);
+    Object.assign(P, r.P); P.rider = r.body;
+    P.torso.add(at(box(0.16, 0.16, 0.25, 0x8e959e), 0, 0.24, 0));
+    const helm = new THREE.Group(); helm.add(at(sph(0.095, 0xb7bec7, false, 10, 6), 0, 0.08, 0)); helm.add(at(cyl(0.02, 0.03, 0.12, TEAM, 6, true), -0.02, 0.18, 0)); P.head.add(helm);
+    const sword = new THREE.Group(); sword.add(at(box(0.025, 0.44, 0.06, 0xdfe5ec), 0, 0.28, 0)); sword.add(at(box(0.03, 0.03, 0.16, 0x8a6a32), 0, 0.05, 0));
+    sword.rotation.z = -Math.PI / 2; P.handR.add(sword); P.tool = sword;
+    root.scale.setScalar(1.05);
+    return { root, body, P };
+  }
+  if (kind === "ram") {
+    const root = new THREE.Group(), body = new THREE.Group(); root.add(body);
+    const P = { wheels: [] }, wood = 0x6b4a2a, darkWood = 0x4a3220;
+    for (const x of [-0.3, 0.3]) for (const z of [-0.24, 0.24]) {
+      const w = new THREE.Group(); const m = cyl(0.13, 0.13, 0.05, darkWood, 10); m.rotation.x = Math.PI / 2; w.add(m);
+      w.add(at(box(0.2, 0.025, 0.055, 0x8a6a42), 0, 0, 0)); at(w, x, 0.13, z); body.add(w); P.wheels.push(w);
+    }
+    body.add(at(box(0.9, 0.06, 0.5, wood), 0, 0.22, 0)); // chassis
+    for (const x of [-0.38, 0.38]) for (const z of [-0.22, 0.22]) body.add(at(box(0.05, 0.42, 0.05, darkWood), x, 0.45, z));
+    const roof = gable(0.95, 0.62, 0.3, 0x8a6a42); roof.position.y = 0.64; body.add(roof);
+    for (const z of [-0.17, 0.17]) { const hide = box(0.9, 0.025, 0.2, TEAM, true); hide.position.set(0, 0.76, z); hide.rotation.x = z > 0 ? -0.75 : 0.75; body.add(hide); }
+    P.log = new THREE.Group(); at(P.log, 0, 0.42, 0); body.add(P.log);
+    const log = cyl(0.07, 0.08, 1.05, 0x7a5532, 8); log.rotation.z = Math.PI / 2; P.log.add(log);
+    const head = cyl(0.1, 0.085, 0.14, 0x5d6066, 8); head.rotation.z = Math.PI / 2; head.position.x = 0.58; P.log.add(head);
+    for (const x of [-0.2, 0.2]) P.log.add(at(box(0.015, 0.2, 0.015, 0x3a3a3a), x, 0.1, 0)); // ropes
+    return { root, body, P };
+  }
 }
 
 // animation pose: anim in idle|walk|attack|work|death, t in [0,1)
 export function pose(kind, h, anim, t) {
+  if (kind === "cavalry") return poseCavalry(h, anim, t);
+  if (kind === "ram") return poseRam(h, anim, t);
   const P = h.P, s = Math.sin(t * Math.PI * 2);
   for (const k of ["legL", "legR", "armL", "armR", "torso", "head"]) P[k].rotation.set(0, 0, 0);
   h.body.rotation.set(0, 0, 0); h.body.position.set(0, 0, 0);
@@ -88,7 +145,12 @@ export function pose(kind, h, anim, t) {
     P.armR.rotation.z += s * 0.45; if (kind === "villager") P.armL.rotation.z = -s * 0.45;
     h.body.position.y = Math.abs(Math.cos(t * Math.PI * 2)) * 0.025;
   }
-  if (anim === "attack" && kind === "archer") {
+  if (kind === "spearman") { P.armL.rotation.z = 0.5; P.armL.rotation.x = 0.2; P.armR.rotation.z = 0.9; }
+  if (anim === "attack" && kind === "spearman") {
+    const thrust = t < 0.4 ? -t / 0.4 * 0.4 : t < 0.6 ? -0.4 + (t - 0.4) / 0.2 * 1.4 : 1 - (t - 0.6) / 0.4;
+    P.armR.rotation.z = 1.1 + thrust * 0.25; P.torso.rotation.z = -thrust * 0.12; h.body.position.x = thrust * 0.08;
+    P.legL.rotation.z = 0.35; P.legR.rotation.z = -0.2;
+  } else if (anim === "attack" && kind === "archer") {
     const draw = t < 0.66 ? t / 0.66 : 1 - (t - 0.66) / 0.34;
     P.armL.rotation.z = 1.45; P.armR.rotation.z = 1.45 - draw * 0.3; P.armR.rotation.x = -draw * 0.5; P.torso.rotation.y = -0.25;
   } else if (anim === "attack" || anim === "work") {
@@ -103,6 +165,53 @@ export function pose(kind, h, anim, t) {
     const a = Math.min(1, t * 1.25);
     h.body.rotation.z = a * (Math.PI / 2 - 0.05); h.body.position.y = Math.sin(a * Math.PI) * 0.05; h.body.position.x = -a * 0.25;
     P.armR.rotation.z = a * 1.2; P.armL.rotation.z = a * 1.0; P.legL.rotation.z = a * 0.3;
+  }
+  if (kind === "spearman") { // spear upright at rest, levelled point-forward when attacking
+    const lean = anim === "attack" ? -Math.PI / 2 + 0.08 : anim === "death" ? 0 : -0.12;
+    P.tool.rotation.z = anim === "death" ? -0.4 : lean - P.armR.rotation.z - P.torso.rotation.z - h.body.rotation.z;
+  }
+}
+
+function poseCavalry(h, anim, t) {
+  const P = h.P, s = Math.sin(t * Math.PI * 2), c = Math.cos(t * Math.PI * 2);
+  for (const k of ["legL", "legR", "armL", "armR", "torso", "head", "hFL", "hFR", "hBL", "hBR", "hHead"]) P[k].rotation.set(0, 0, 0);
+  h.body.rotation.set(0, 0, 0); h.body.position.set(0, 0, 0); P.horse.rotation.set(0, 0, 0);
+  // rider sits astride: thighs forward and apart
+  P.legL.rotation.set(-0.45, 0, 1.35); P.legR.rotation.set(0.45, 0, 1.35);
+  P.armL.rotation.z = 0.9; P.armL.rotation.x = 0.15; P.armR.rotation.z = 0.2;
+  P.hTail.rotation.z = -0.35;
+  if (anim === "idle") { P.hHead.rotation.z = -0.15; }
+  if (anim === "walk") { // gallop: front and back pairs out of phase
+    P.hFL.rotation.z = s * 0.7; P.hFR.rotation.z = Math.sin(t * Math.PI * 2 + 0.6) * 0.7;
+    P.hBL.rotation.z = -s * 0.6; P.hBR.rotation.z = -Math.sin(t * Math.PI * 2 + 0.6) * 0.6;
+    P.horse.rotation.z = c * 0.06; h.body.position.y = Math.abs(s) * 0.05; P.hHead.rotation.z = c * 0.12; P.hTail.rotation.z = -0.6 + s * 0.15;
+    P.torso.rotation.z = -0.1;
+  }
+  if (anim === "attack") {
+    const a = t < 0.5 ? t / 0.5 : 1 - (t - 0.5) / 0.5 * 1.15;
+    P.armR.rotation.z = -0.4 + a * 2.6 - 0.9; P.torso.rotation.y = a * 0.25; P.torso.rotation.z = -a * 0.1;
+    P.hFL.rotation.z = 0.15 * Math.sin(t * Math.PI * 4); P.hHead.rotation.z = -0.1 + a * 0.15;
+  }
+  if (anim === "death") {
+    const a = Math.min(1, t * 1.25);
+    h.body.rotation.x = a * (Math.PI / 2 - 0.12); h.body.position.y = Math.sin(a * Math.PI) * 0.06;
+    P.hFL.rotation.z = a * 0.8; P.hBL.rotation.z = -a * 0.6; P.armR.rotation.z = a * 1.4; P.hHead.rotation.z = a * 0.4;
+  }
+}
+
+function poseRam(h, anim, t) {
+  const P = h.P;
+  h.body.rotation.set(0, 0, 0); h.body.position.set(0, 0, 0); P.log.position.x = 0; P.log.rotation.set(0, 0, 0);
+  for (const w of P.wheels) w.rotation.z = 0;
+  if (anim === "walk") { for (const w of P.wheels) w.rotation.z = -t * Math.PI * 2; h.body.position.y = Math.abs(Math.sin(t * Math.PI * 4)) * 0.01; P.log.rotation.z = Math.sin(t * Math.PI * 2) * 0.03; }
+  if (anim === "attack") { // swing back, then strike forward
+    const a = t < 0.6 ? -t / 0.6 : -1 + (t - 0.6) / 0.15 * 1.6; P.log.position.x = Math.max(-0.22, Math.min(0.2, a * 0.22));
+    if (t >= 0.75) P.log.position.x = 0.2 - (t - 0.75) / 0.25 * 0.2;
+  }
+  if (anim === "death") {
+    const a = Math.min(1, t * 1.25);
+    h.body.rotation.x = a * 0.35; h.body.position.y = -a * 0.06; P.log.position.y = -a * 0.25; P.log.rotation.z = a * 0.25;
+    P.wheels[0].rotation.x = a * 0.9; P.wheels[3].rotation.x = -a * 0.7;
   }
 }
 
@@ -199,6 +308,19 @@ export function makeBuilding(kind) {
     crate(g, -0.3, -0.25); crate(g, -0.3, 0.05); crate(g, -0.3, -0.1, 0.18, 0.2); crate(g, 0.75, 0.6, 0.18); barrel(g, 0.0, -0.3); barrel(g, 0.2, -0.35);
     for (let i = 0; i < 4; i++) { const l = at(cyl(0.06, 0.06, 0.9, 0x7a5532, 7), 0.2, 0.15 + (i % 2) * 0.1, 0.35 + (i >> 1) * 0.12 - (i % 2) * 0.06); l.rotation.z = Math.PI / 2; g.add(l); }
     flagPole(g, 0.7, -0.6, 1.3);
+  } else if (kind === "workshop") {
+    stoneBase(g, 2.6, 2.4, 0.12);
+    // open-sided shed on posts with a big roof, a half-built ram and an anvil inside
+    for (const x of [-1.0, 0, 1.0]) for (const z of [-0.95, 0.95]) g.add(at(box(0.09, 0.95, 0.09, 0x5a3d22), x, 0.6, z));
+    g.add(at(box(2.1, 0.75, 0.06, 0x8a6a3e), 0, 0.5, -0.95)); // back wall
+    g.add(at(box(0.06, 0.75, 1.9, 0x8a6a3e), -1.0, 0.5, 0)); // side wall
+    g.add(at(gable(2.4, 2.15, 0.6, 0x6e3a24), 0, 1.07, 0));
+    const frame = new THREE.Group(); frame.add(at(box(0.8, 0.05, 0.45, 0x7a5532), 0, 0.3, 0)); for (const x of [-0.32, 0.32]) for (const z of [-0.2, 0.2]) frame.add(at(box(0.04, 0.4, 0.04, 0x4a3220), x, 0.5, z));
+    for (const x of [-0.3, 0.3]) { const w = cyl(0.12, 0.12, 0.04, 0x4a3220, 10); w.rotation.x = Math.PI / 2; w.position.set(x, 0.24, 0.25); frame.add(w); }
+    frame.position.set(0.1, 0.12, 0.05); frame.rotation.y = 0.15; g.add(frame);
+    g.add(at(box(0.2, 0.14, 0.12, 0x3a3a3e), 0.85, 0.27, -0.55)); g.add(at(box(0.14, 0.12, 0.1, 0x55402a), 0.85, 0.16, -0.55)); // anvil on a block
+    for (let i = 0; i < 3; i++) { const l = at(cyl(0.06, 0.06, 0.95, 0x7a5532, 7), 1.15, 0.18 + (i === 2 ? 0.1 : 0), 0.55 + (i % 2) * 0.13 - (i === 2 ? 0.065 : 0)); l.rotation.x = Math.PI / 2; g.add(l); }
+    banner(g, 1.08, 0.75, -0.2); flagPole(g, -1.05, 1.0, 1.9); barrel(g, 1.2, -0.85); crate(g, -0.75, 1.15, 0.2);
   } else if (kind === "farm") {
     g.add(at(box(1.85, 0.04, 1.85, 0x6e5232), 0, 0.02, 0));
     for (let i = 0; i < 7; i++) { g.add(at(box(1.7, 0.05, 0.08, 0x57402a), 0, 0.05, -0.75 + i * 0.25)); for (let j = 0; j < 9; j++) { const c = mesh(new THREE.ConeGeometry(0.05, 0.18, 5), mat([0x8aa63a, 0x9cb648, 0x7a9a32][(i + j) % 3])); c.position.set(-0.78 + j * 0.195, 0.14, -0.75 + i * 0.25); g.add(c); } }
