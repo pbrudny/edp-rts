@@ -1,0 +1,8 @@
+<!doctype html><canvas id=c width=200 height=200></canvas><script type=module>
+import * as THREE from "./vendor/three.module.js";
+const r = new THREE.WebGLRenderer({ canvas: c, alpha: true, preserveDrawingBuffer: true });
+const s = new THREE.Scene(); const cam = new THREE.PerspectiveCamera(50, 1, .1, 100); cam.position.set(2,2,2); cam.lookAt(0,0,0);
+s.add(new THREE.Mesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshStandardMaterial({ color: 0xcc5533 })));
+s.add(new THREE.DirectionalLight(0xffffff, 2)); s.add(new THREE.AmbientLight(0xffffff, .4)); r.render(s, cam);
+document.title = "ok " + r.capabilities.isWebGL2;
+</script>

@@ -1,0 +1,31 @@
+<!doctype html><html><body style="margin:0;background:#000"><canvas id="c" width="1400" height="860"></canvas>
+<script type="module">
+import { createGame, step, command, KINDS, COLORS, mapInfo } from "/shared/sim.js";
+import * as Art from "/public/art.js";
+const s = createGame({ seed: 4242, players: [{ name: "A", ai: "hard" }, { name: "B", ai: "hard" }] });
+for (let i = 0; i < 2400; i++) step(s);          // 4 minutes of AI play
+const m = mapInfo(s); const map = { w: m.w, h: m.h, tile: m.tile, wood: m.wood };
+const t0 = performance.now(); const ground = Art.makeGround(map); Art.makeTrees(); const genMs = performance.now() - t0;
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+const tc = [...s.ents.values()].find(e => e.kind === "tc" && e.owner === 0);
+const lake = location.hash === "#lake"; let lx = 0, ly = 0;
+if (lake) { let best = 1e9; for (let i = 0; i < map.w * map.h; i++) if (map.tile[i] === 1) { const x = i % map.w, y = (i / map.w) | 0, d = Math.hypot(x - tc.x, y - tc.y); if (d < best) { best = d; lx = x; ly = y; } } }
+const z = 1.25, camx = ((lake ? lx : tc.x + 1.5)) * 32 - 700 / z, camy = ((lake ? ly : tc.y + 1.5)) * 32 - 430 / z;
+ctx.setTransform(z, 0, 0, z, -camx * z, -camy * z);
+ctx.drawImage(ground, 0, 0);
+const list = [];
+for (const e of s.ents.values()) {
+  const k = KINDS[e.kind];
+  if (k.type === "unit") list.push({ y: e.y + .2, f: () => Art.drawUnit(ctx, e.kind, e.x * 32, e.y * 32 + 6, COLORS[e.owner], e.face ?? 0, e.anim === "attack" ? 1 : e.anim === "gather" ? 2 : e.anim === "build" ? 3 : e.moving ? 4 : 0, 1.3, e.id, e.carry ? ["food","wood","gold"].indexOf(e.carry.type) : -1) });
+  else {
+    const blit = (S) => ctx.drawImage(S.c, e.x * 32 + S.ox, e.y * 32 + S.oy, S.w, S.h);
+    const f = () => e.kind === "gold" ? blit(Art.goldSprite(e.id)) : e.kind === "berries" ? blit(Art.berrySprite(e.id)) : blit(Art.buildingSprite(e.kind, COLORS[e.owner], k.w, k.h, e.built < 1));
+    if (e.kind === "farm") f(); else list.push({ y: e.y + k.h, f });
+  }
+}
+for (let y = 0; y < map.h; y++) for (let x = 0; x < map.w; x++) if (map.wood[y * map.w + x]) list.push({ y: y + .85, f: () => Art.drawTree(ctx, x, y) });
+list.sort((a, b) => a.y - b.y); list.forEach(d => d.f());
+Art.drawArrow(ctx, (tc.x + 5) * 32, (tc.y + 5) * 32, 1, 0.3);
+ctx.setTransform(1,0,0,1,0,0); ctx.fillStyle = "#fff"; ctx.font = "14px sans-serif"; ctx.fillText(`ground gen ${genMs | 0} ms`, 10, 20);
+document.title = "done";
+</script></body></html>

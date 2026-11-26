@@ -1,0 +1,8 @@
+<body style="margin:0;background:#6b8a4a"><canvas id=c width=1100 height=760></canvas><script>
+fetch('/sheet.json').then(r=>r.json()).then(list=>{const img=new Image();img.onload=()=>{const m=new Image();m.onload=()=>{
+const g=c.getContext('2d');const cols=["#3b82f6","#ef4444","#eab308","#a855f7"];
+list.forEach(([n,x,y,w,h,ax,ay],i)=>{const cx=60+(i%8)*130, cy=140+Math.floor(i/8)*110; const s=0.75;
+g.drawImage(img,x,y,w,h,cx-ax*s,cy-ay*s,w*s,h*s);
+const t=document.createElement('canvas');t.width=w;t.height=h;const tg=t.getContext('2d');tg.drawImage(m,x,y,w,h,0,0,w,h);tg.globalCompositeOperation='multiply';tg.fillStyle=cols[Math.floor(i/16)%4];tg.fillRect(0,0,w,h);tg.globalCompositeOperation='destination-in';tg.drawImage(m,x,y,w,h,0,0,w,h);
+g.drawImage(t,cx-ax*s,cy-ay*s,w*s,h*s);});document.title='done'};m.src='/out/units_0_mask.png'};img.src='/out/units_0.png'});
+</script>

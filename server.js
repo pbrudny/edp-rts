@@ -1,0 +1,182 @@
+// Ember Realms server: rooms, authoritative simulation (10 ticks/s), WebSocket to browsers,
+// domain events published (batched) to the shared broker topic demo.rts.
+//
+//   browser --commands (WS)--> room.sim --snapshots (WS)--> browsers
+//                                   \--events (REST, batched)--> broker demo.rts
+
+import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
+import { extname } from "node:path";
+import { randomUUID } from "node:crypto";
+import { WebSocketServer } from "ws";
+import { createGame, step, command, snapshot, mapInfo, TICK } from "./shared/sim.js";
+
+const PORT = Number(process.env.PORT ?? 3000);
+const BROKER = process.env.BROKER_URL;
+const AUTH = process.env.BROKER_PASSWORD ? "Basic " + Buffer.from(`${process.env.BROKER_USER ?? "demo"}:${process.env.BROKER_PASSWORD}`).toString("base64") : null;
+const TOPIC = process.env.TOPIC ?? "demo.rts";
+const MAX_ROOMS = 30;
+const VERSION = Date.now().toString(36); // changes on every deploy/restart
+
+// ------------------------------------------------------------------ broker publisher (queue + batch, one request in flight)
+const queue = [];
+let flushing = false;
+function publish(game, ev) {
+  if (!BROKER || !AUTH) return;
+  queue.push({ key: game, value: { ...ev, game, ts: Date.now() } });
+  flush();
+}
+async function flush() {
+  if (flushing) return;
+  flushing = true;
+  while (queue.length) {
+    const batch = queue.splice(0, 200);
+    try {
+      const r = await fetch(`${BROKER}/topics/${TOPIC}`, { method: "POST", signal: AbortSignal.timeout(10000),
+        headers: { Authorization: AUTH, "Content-Type": "application/vnd.kafka.json.v2+json" }, body: JSON.stringify({ records: batch }) });
+      const body = await r.json();
+      const bad = body.offsets?.find((o) => o.error_code);
+      if (!r.ok || bad) console.warn("broker publish problem", r.status, JSON.stringify(bad ?? body).slice(0, 200));
+    } catch (e) { console.warn("broker publish failed", e.message); }
+  }
+  flushing = false;
+}
+
+// ------------------------------------------------------------------ rooms
+const rooms = new Map();
+const code = () => { const A = "ABCDEFGHJKLMNPQRSTUVWXYZ"; let c; do { c = Array.from({ length: 4 }, () => A[(Math.random() * A.length) | 0]).join(""); } while (rooms.has(c)); return c; };
+const clean = (n) => String(n ?? "").replace(/[^\p{L}\p{N} _.-]/gu, "").trim().slice(0, 16) || "Player";
+
+function lobbyState(room) {
+  return { t: "lobby", code: room.code, host: room.slots[0]?.ws ? 0 : -1, slots: room.slots.map((s) => ({ name: s.name, ai: s.ai ?? null })), started: !!room.sim };
+}
+function sendRoom(room, msg) { const m = JSON.stringify(msg); for (const s of room.slots) if (s.ws?.readyState === 1) s.ws.send(m); }
+
+function startRoom(room) {
+  room.sim = createGame({ players: room.slots.map((s) => ({ name: s.name, ai: s.ai })) });
+  room.id = randomUUID().slice(0, 8);
+  const map = JSON.stringify(mapInfo(room.sim));
+  room.slots.forEach((s, i) => { if (s.ws?.readyState === 1) { s.ws.send(map); s.ws.send(JSON.stringify({ t: "start", me: i })); } });
+  for (const w of room.watchers ?? []) if (w.readyState === 1) { w.send(map); w.send(JSON.stringify({ t: "start", me: -1 })); }
+  room.timer = setInterval(() => tickRoom(room), TICK * 1000);
+}
+function tickRoom(room) {
+  const s = room.sim;
+  for (const [pid, c] of room.inbox.splice(0)) {
+    try {
+      if (c.ids !== undefined && (!Array.isArray(c.ids) || c.ids.length > 200)) continue;
+      for (const f of ["x", "y"]) if (c[f] !== undefined) c[f] = Number(c[f]) || 0;
+      if (c.t === "build" || c.t === "tree") { c.x = Math.floor(c.x); c.y = Math.floor(c.y); }
+      command(s, pid, c);
+    } catch (e) { console.warn("bad command", e.message); }
+  }
+  for (let n = 0; n < (room.speed ?? 1); n++) {
+    try { step(s); } catch (e) { console.error("sim error", e); closeRoom(room); sendRoom(room, { t: "error", msg: "The game crashed, sorry." }); return; }
+    for (const ev of s.events) publish(room.id, ev);
+    s.events = [];
+  }
+  room.slots.forEach((slot, i) => { if (slot.ws?.readyState === 1) slot.ws.send(JSON.stringify(snapshot(s, i))); });
+  if (room.watchers?.length) { const m = JSON.stringify(snapshot(s, -1)); for (const w of room.watchers) if (w.readyState === 1) w.send(m); }
+  if (s.over && !room.endAt) room.endAt = Date.now() + 30000;
+  const anyone = room.slots.some((x) => x.ws?.readyState === 1) || room.watchers?.some((w) => w.readyState === 1);
+  if ((room.endAt && Date.now() > room.endAt) || !anyone) closeRoom(room);
+}
+function closeRoom(room) { clearInterval(room.timer); rooms.delete(room.code); }
+
+// ------------------------------------------------------------------ http + ws
+const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json" };
+const server = createServer(async (req, res) => {
+  const url = new URL(req.url, "http://x");
+  if (url.pathname === "/health") return res.end("ok");
+  let path = url.pathname === "/" ? "/public/index.html" : url.pathname;
+  if (path.startsWith("/shared/")) path = path; else if (!path.startsWith("/public/")) path = "/public" + path;
+  if (path.includes("..")) return res.writeHead(400).end();
+  try {
+    let body = await readFile(new URL("." + path, import.meta.url));
+    const ext = extname(path);
+    if (ext === ".html" || ext === ".js") {
+      // cache busting: every deploy gets a new version stamp on all local file references
+      body = body.toString().replace(/(["'])(\/(?:shared|vendor|assets)?\/?[\w.\/-]+\.(?:js|json|png))\1/g, `$1$2?v=${VERSION}$1`).replace("__ER_VERSION__", VERSION);
+    }
+    const cache = url.searchParams.get("v") === VERSION ? "public, max-age=31536000, immutable" : "no-cache";
+    res.writeHead(200, { "Content-Type": TYPES[ext] ?? "application/octet-stream", "Cache-Control": cache }).end(body);
+  } catch { res.writeHead(404).end("not found"); }
+});
+
+const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
+// heartbeat: proxies (Traefik/Cloudflare) close silent WebSockets after ~100 s, which killed idle lobbies
+setInterval(() => { for (const c of wss.clients) { if (c.alive === false) { c.terminate(); continue; } c.alive = false; c.ping(); } }, 25000);
+wss.on("connection", (ws) => {
+  let room = null, pid = -1, last = 0, burst = 0;
+  ws.alive = true; ws.on("pong", () => (ws.alive = true));
+  const reply = (m) => ws.readyState === 1 && ws.send(JSON.stringify(m));
+  ws.on("message", (raw) => {
+    const now = Date.now(); if (now - last > 1000) { last = now; burst = 0; } if (++burst > 40) return; // flood guard
+    let m; try { m = JSON.parse(raw); } catch { return; }
+    if (m.t === "ping") return;
+    if (room) pid = room.slots.findIndex((s) => s.ws === ws); // slots can shift while in the lobby
+    if (m.t === "cmd") { if (room?.sim && pid >= 0 && m.c && typeof m.c === "object") room.inbox.push([pid, m.c]); return; }
+    if (room && m.t !== "addAI" && m.t !== "start" && m.t !== "kick" && m.t !== "speed") return;
+    switch (m.t) {
+      case "watch": {
+        if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
+        const diff = ["easy", "normal", "hard"].includes(m.diff) ? m.diff : "normal";
+        const n = Math.min(4, Math.max(2, (Number(m.ais) || 1) + 1));
+        room = { code: code(), slots: [], inbox: [], watchers: [ws], speed: [1, 2, 4, 8].includes(+m.speed) ? +m.speed : 2 };
+        for (let i = 0; i < n; i++) room.slots.push({ name: ["Ashford", "Brennmark", "Cold Harbour", "Dunmere"][i] + " AI", ai: diff });
+        rooms.set(room.code, room); startRoom(room);
+        break;
+      }
+      case "speed": if (room?.watchers?.includes(ws) && [1, 2, 4, 8].includes(+m.speed)) room.speed = +m.speed; break;
+      case "single": {
+        if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
+        const diff = ["easy", "normal", "hard"].includes(m.diff) ? m.diff : "normal";
+        const n = Math.min(3, Math.max(1, Number(m.ais) || 1));
+        room = { code: code(), slots: [{ name: clean(m.name), ws }], inbox: [] };
+        for (let i = 0; i < n; i++) room.slots.push({ name: ["Ashford", "Brennmark", "Cold Harbour"][i] + " AI", ai: diff });
+        rooms.set(room.code, room); pid = 0; startRoom(room);
+        break;
+      }
+      case "create":
+        if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
+        room = { code: code(), slots: [{ name: clean(m.name), ws }], inbox: [] }; rooms.set(room.code, room); pid = 0;
+        sendRoom(room, lobbyState(room));
+        break;
+      case "join": {
+        const r = rooms.get(String(m.code ?? "").toUpperCase());
+        if (!r) return reply({ t: "error", msg: "No game with that code." });
+        if (r.sim) return reply({ t: "error", msg: "That game has already started." });
+        if (r.slots.length >= 4) return reply({ t: "error", msg: "That game is full." });
+        room = r; pid = r.slots.length; r.slots.push({ name: clean(m.name), ws });
+        sendRoom(r, lobbyState(r));
+        break;
+      }
+      case "addAI":
+        if (room && pid === 0 && !room.sim && room.slots.length < 4) {
+          const diff = ["easy", "normal", "hard"].includes(m.diff) ? m.diff : "normal";
+          room.slots.push({ name: ["Ashford", "Brennmark", "Cold Harbour"][room.slots.length - 1] + " AI", ai: diff });
+          sendRoom(room, lobbyState(room));
+        }
+        break;
+      case "kick":
+        if (room && pid === 0 && !room.sim && m.slot > 0 && room.slots[m.slot]?.ai) { room.slots.splice(m.slot, 1); sendRoom(room, lobbyState(room)); }
+        break;
+      case "start":
+        if (room && pid === 0 && !room.sim && room.slots.length >= 2) startRoom(room);
+        break;
+    }
+  });
+  ws.on("close", () => {
+    if (!room) return;
+    if (!room.sim) {
+      const i = room.slots.findIndex((s) => s.ws === ws);
+      if (i >= 0) room.slots.splice(i, 1);
+      if (!room.slots.some((s) => s.ws)) rooms.delete(room.code); else sendRoom(room, lobbyState(room));
+    } else {
+      const i = room.slots.findIndex((s) => s.ws === ws);
+      if (i >= 0) { room.slots[i].ws = null; command(room.sim, i, { t: "resign" }); } // leaving a running game = resign
+    }
+  });
+});
+
+server.listen(PORT, () => console.log(`Ember Realms on :${PORT}, events -> ${BROKER ? TOPIC : "(broker off)"}`));

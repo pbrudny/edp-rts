@@ -1,0 +1,21 @@
+name: edp-rts
+services:
+  rts:
+    build: .
+    container_name: edp-rts
+    restart: unless-stopped
+    environment:
+      BROKER_URL: http://edp-redpanda:8082
+      BROKER_USER: demo
+      BROKER_PASSWORD: ${EDP_BROKER_DEMO_PASSWORD}
+      TOPIC: demo.rts
+    networks: [coolify]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=coolify
+      - traefik.http.routers.edp-rts.rule=Host(`rts.codewithpeter.com`)
+      - traefik.http.routers.edp-rts.entrypoints=http
+      - traefik.http.services.edp-rts.loadbalancer.server.port=3000
+networks:
+  coolify:
+    external: true

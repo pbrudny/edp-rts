@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ember Realms</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700;900&family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+<style>
+:root { --ink: #f3ead7; --muted: #b7a98c; --panel: rgba(28, 22, 16, .92); --edge: #6b5537; --gold: #e8b64c; --food: #e0674f; --wood: #9c6b3c; --goldres: #f2c84b; --ok: #6fbf73; --bad: #e0674f;
+  --display: "Cinzel", Georgia, serif; --body: "Atkinson Hyperlegible", system-ui, sans-serif; color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; background: #14110c; color: var(--ink); font: 14px/1.4 var(--body); user-select: none; }
+#stage { position: fixed; inset: 0; } #stage canvas { display: block; }
+.hud { position: fixed; pointer-events: none; }
+.hud > * { pointer-events: auto; }
+#top { top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 18px; padding: 6px 14px; background: linear-gradient(var(--panel), rgba(28,22,16,.75)); border-bottom: 2px solid var(--edge); }
+.res { display: flex; align-items: center; gap: 6px; font-weight: 700; font-variant-numeric: tabular-nums; min-width: 72px; }
+.res i { width: 14px; height: 14px; border-radius: 3px; display: inline-block; box-shadow: inset 0 0 0 1px rgba(0,0,0,.4); }
+#players { display: flex; gap: 10px; margin-left: auto; font-size: 13px; }
+#players span { display: inline-flex; align-items: center; gap: 5px; }
+#players span.dead { opacity: .45; text-decoration: line-through; }
+#players b { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+#clock { font-variant-numeric: tabular-nums; color: var(--muted); }
+button { font: 700 13px var(--body); color: var(--ink); background: #3a2d1f; border: 1.5px solid var(--edge); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+button:hover:not(:disabled) { background: #4d3b28; border-color: var(--gold); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+#bottom { left: 0; bottom: 0; right: 216px; height: 150px; display: grid; grid-template-columns: minmax(180px, 260px) 1fr; gap: 12px; padding: 10px 14px; background: linear-gradient(rgba(28,22,16,.8), var(--panel)); border-top: 2px solid var(--edge); }
+#info h3 { margin: 0 0 4px; font: 700 17px var(--display); letter-spacing: .02em; }
+#info .sub { color: var(--muted); font-size: 13px; }
+.hpbar { height: 7px; background: #3a1d17; border-radius: 4px; overflow: hidden; margin: 6px 0; }
+.hpbar > div { height: 100%; background: var(--ok); }
+#cmds { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 8px; }
+.cmd { display: grid; gap: 2px; text-align: left; min-width: 112px; }
+.cmd small { color: var(--muted); font-weight: 400; font-size: 11.5px; }
+.cmd kbd { float: right; font: 700 11px var(--body); color: var(--gold); }
+.queue { display: flex; gap: 6px; align-items: center; width: 100%; }
+.qi { position: relative; padding: 4px 8px; border: 1.5px solid var(--edge); border-radius: 6px; font-size: 12px; background: #2b2118; cursor: pointer; overflow: hidden; }
+.qi .p { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--gold); }
+#mini { right: 0; bottom: 0; width: 216px; height: 150px; display: grid; place-items: center; padding: 8px; background: var(--panel); border-top: 2px solid var(--edge); border-left: 2px solid var(--edge); }
+#mini canvas { width: 200px; height: 100px; display: block; image-rendering: pixelated; cursor: pointer; }
+#toast { top: 52px; left: 50%; transform: translateX(-50%); background: var(--panel); border: 1.5px solid var(--edge); border-radius: 8px; padding: 6px 14px; font-weight: 700; opacity: 0; transition: opacity .25s; }
+#toast.on { opacity: 1; }
+#help { top: 50px; left: 12px; font-size: 12px; color: var(--muted); background: rgba(28,22,16,.7); border-radius: 8px; padding: 6px 10px; max-width: 280px; }
+.overlay { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(circle at 50% 30%, rgba(80,55,25,.55), rgba(10,8,5,.92)); z-index: 10; padding: 16px; overflow: auto; }
+.card { width: min(560px, 100%); background: var(--panel); border: 2px solid var(--edge); border-radius: 14px; padding: 22px 24px; display: grid; gap: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.6); }
+.card h1 { font: 900 clamp(32px, 6vw, 48px)/1 var(--display); margin: 0; color: var(--gold); letter-spacing: .03em; text-align: center; text-shadow: 0 2px 0 #4a3315; }
+.card h2 { font: 700 18px var(--display); margin: 0; }
+.card p { margin: 0; color: var(--muted); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+input, select { font: 14px var(--body); background: #241b13; color: var(--ink); border: 1.5px solid var(--edge); border-radius: 6px; padding: 7px 10px; }
+.slot { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--edge); border-radius: 8px; }
+.slot b { width: 12px; height: 12px; border-radius: 50%; }
+.big { font-size: 15px; padding: 9px 16px; background: #6b4a1c; border-color: var(--gold); }
+.err { color: var(--bad); font-weight: 700; min-height: 1.2em; }
+.code { font: 900 34px var(--display); letter-spacing: .2em; color: var(--gold); }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div class="overlay" id="loading" hidden><div class="card" style="text-align:center"><h2>Preparing the map…</h2></div></div>
+
+<div class="hud" id="top" hidden>
+  <span id="resbar" style="display:contents">
+  <span class="res" title="Food"><i style="background:var(--food)"></i><span id="rFood">0</span></span>
+  <span class="res" title="Wood"><i style="background:var(--wood)"></i><span id="rWood">0</span></span>
+  <span class="res" title="Gold"><i style="background:var(--goldres)"></i><span id="rGold">0</span></span>
+  <span class="res" title="Population"><svg width="14" height="14" viewBox="0 0 14 14"><circle cx="7" cy="4" r="3" fill="#f3ead7"/><path d="M1 14c0-4 3-6 6-6s6 2 6 6z" fill="#f3ead7"/></svg><span id="rPop">0/0</span></span>
+  </span>
+  <label id="speedCtl" hidden>Speed <select id="speed"><option value="1">1x</option><option value="2" selected>2x</option><option value="4">4x</option><option value="8">8x</option></select></label>
+  <span id="clock">0:00</span>
+  <div id="players"></div>
+  <button id="mute">Sound on</button>
+  <button id="resign">Resign</button>
+</div>
+<div class="hud" id="help" hidden>Drag to select · Right-click (touchpad: two-finger click or Ctrl+click) to move, gather, build, attack · <b>Q W E R</b> build/train · <b>A</b> attack-move · <b>.</b> idle villager · <b>H</b> town centre · <b>Space</b> jump to attack · <b>M</b> sound · arrows / screen edge / two-finger swipe to scroll · wheel, pinch or +/- to zoom</div>
+<div class="hud" id="bottom" hidden><div id="info"></div><div id="cmds"></div></div>
+<div class="hud" id="mini" hidden><canvas id="minimap" width="200" height="100"></canvas></div>
+<div class="hud" id="toast"></div>
+
+<div class="overlay" id="menu">
+  <div class="card">
+    <h1>Ember Realms</h1>
+    <p style="text-align:center">Gather food, wood and gold. Grow your village, raise an army, and burn every enemy building to the ground.</p>
+    <div class="row"><label for="name">Your name</label><input id="name" maxlength="16" placeholder="Commander"></div>
+    <h2>Single player</h2>
+    <div class="row">
+      <select id="diff" aria-label="Difficulty"><option value="easy">Easy</option><option value="normal" selected>Normal</option><option value="hard">Hard</option></select>
+      <select id="ais" aria-label="Opponents"><option value="1">1 opponent</option><option value="2">2 opponents</option><option value="3">3 opponents</option></select>
+      <button class="big" id="playSingle">Play</button>
+      <button id="watch" title="Computer players fight each other while you watch">Watch AI battle</button>
+    </div>
+    <h2>Multiplayer</h2>
+    <div class="row">
+      <button class="big" id="create">Create game</button>
+      <input id="joinCode" maxlength="4" placeholder="CODE" style="width:90px;text-transform:uppercase">
+      <button id="join">Join</button>
+    </div>
+    <div class="err" id="err"></div>
+  </div>
+</div>
+
+<div class="overlay" id="lobby" hidden>
+  <div class="card">
+    <h2>Game lobby</h2>
+    <p>Share this code with your friends:</p>
+    <div class="code" id="lobbyCode">----</div>
+    <div id="slots" style="display:grid;gap:6px"></div>
+    <div class="row" id="hostCtl">
+      <select id="aiDiff" aria-label="AI difficulty"><option value="easy">Easy AI</option><option value="normal" selected>Normal AI</option><option value="hard">Hard AI</option></select>
+      <button id="addAI">Add AI player</button>
+      <button class="big" id="start">Start game</button>
+    </div>
+    <p id="waitHost" hidden>Waiting for the host to start…</p>
+    <button id="leave">Leave</button>
+  </div>
+</div>
+
+<div class="overlay" id="end" hidden>
+  <div class="card" style="text-align:center">
+    <h1 id="endTitle">Victory</h1>
+    <p id="endText"></p>
+    <div class="row" style="justify-content:center"><button class="big" id="again">Back to menu</button></div>
+  </div>
+</div>
+
+<script>window.ER_V = "__ER_VERSION__";</script>
+<script src="/vendor/pixi.min.js"></script>
+<script type="module" src="/client.js"></script>
+</body>
+</html>
