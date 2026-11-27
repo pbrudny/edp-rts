@@ -1,0 +1,137 @@
+// Headless AI-vs-AI playtest: runs many games in worker threads and writes balance/health metrics as JSON.
+// usage: node loop/playtest.mjs [--games 48] [--minutes 25] [--out reports/playtest-<ts>.json] [--quiet]
+// Pure sim (shared/sim.js), no server. Every game is deterministic: same seed + same matchup = same result.
+import { Worker, isMainThread, parentPort, workerData } from "node:worker_threads";
+import { cpus } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const MAPS = ["lakes", "plains", "forest", "river"];
+
+// Matchups. "mirror" games (same difficulty) measure seat/map fairness, "ladder" games check that harder AI wins.
+const MATCHUPS = [
+  { name: "mirror-normal-1v1", group: "mirror", players: ["normal", "normal"] },
+  { name: "mirror-hard-1v1", group: "mirror", players: ["hard", "hard"] },
+  { name: "mirror-normal-ffa4", group: "mirror", players: ["normal", "normal", "normal", "normal"], minutes: 40 },
+  { name: "ladder-hard-vs-normal", group: "ladder", players: ["hard", "normal"], expect: 0 },
+  { name: "ladder-normal-vs-easy", group: "ladder", players: ["normal", "easy"], expect: 0 },
+];
+
+if (!isMainThread) {
+  const { createGame, step } = await import(join(here, "..", "shared", "sim.js"));
+  for (const job of workerData.jobs) {
+    const players = job.players.map((d, i) => ({ name: `P${i}`, ai: d }));
+    const s = createGame({ seed: job.seed, map: job.map, players });
+    const trained = {}, lost = {}, firstAttack = {};
+    let maxTick = 0;
+    const t0 = performance.now();
+    while (!s.over && s.time < job.minutes * 60) {
+      const a = performance.now();
+      step(s);
+      if (s.tick > 50) maxTick = Math.max(maxTick, performance.now() - a); // skip JIT warm-up
+      for (const e of s.events) {
+        if (e.type === "unit_trained") trained[e.unit] = (trained[e.unit] ?? 0) + 1;
+        else if (e.type === "unit_killed") lost[e.kind] = (lost[e.kind] ?? 0) + 1;
+        else if (e.type === "attack_launched" && firstAttack[e.player] === undefined) firstAttack[e.player] = Math.round(s.time);
+      }
+      s.events = [];
+    }
+    const ms = performance.now() - t0;
+    parentPort.postMessage({
+      ...job, over: s.over, winner: s.winner ?? null, time: Math.round(s.time), ticks: s.tick,
+      simMs: Math.round(ms), avgTickMs: +(ms / Math.max(1, s.tick)).toFixed(3), maxTickMs: +maxTick.toFixed(2),
+      trained, lost, firstAttack: Object.values(firstAttack).length ? Math.min(...Object.values(firstAttack)) : null,
+      players: s.players.map((p) => ({ seat: p.id, ai: p.ai?.diff, alive: p.alive, ...p.stats })),
+    });
+  }
+  process.exit(0);
+}
+
+// ---------- main thread ----------
+const arg = (name, def) => { const i = process.argv.indexOf("--" + name); return i < 0 ? def : process.argv[i + 1] ?? true; };
+const perMatchup = Math.max(1, Math.round(Number(arg("games", 48)) / MATCHUPS.length));
+const minutes = Number(arg("minutes", 25));
+const quiet = process.argv.includes("--quiet");
+const out = arg("out", join(here, "..", "reports", `playtest-${new Date().toISOString().replace(/[:.]/g, "-")}.json`));
+
+const jobs = [];
+for (const m of MATCHUPS) for (let i = 0; i < perMatchup; i++)
+  jobs.push({ matchup: m.name, group: m.group, expect: m.expect, players: m.players, map: MAPS[i % MAPS.length], seed: 1000 + i * 7919, minutes: m.minutes ?? minutes });
+
+const nWorkers = Math.min(jobs.length, Math.max(1, cpus().length - 1));
+const chunks = Array.from({ length: nWorkers }, (_, w) => jobs.filter((_, i) => i % nWorkers === w));
+const t0 = Date.now();
+const games = (await Promise.all(chunks.map((c) => new Promise((res, rej) => {
+  const got = [], w = new Worker(fileURLToPath(import.meta.url), { workerData: { jobs: c } });
+  w.on("message", (g) => got.push(g)); w.on("error", rej); w.on("exit", () => res(got));
+})))).flat().sort((a, b) => a.matchup.localeCompare(b.matchup) || a.seed - b.seed);
+
+// ---------- metrics ----------
+const pct = (n, d) => (d ? +(100 * n / d).toFixed(1) : null);
+const median = (xs) => { const v = [...xs].sort((a, b) => a - b); return v.length ? v[v.length >> 1] : null; };
+const byMatchup = {};
+for (const m of MATCHUPS) {
+  const gs = games.filter((g) => g.matchup === m.name), done = gs.filter((g) => g.over && g.winner !== null);
+  const seatWins = m.players.map((_, i) => done.filter((g) => g.winner === i).length);
+  byMatchup[m.name] = {
+    games: gs.length, finished: done.length, timeouts: gs.length - done.length,
+    seatWinPct: seatWins.map((w) => pct(w, done.length)),
+    medianMinutes: done.length ? +(median(done.map((g) => g.time)) / 60).toFixed(1) : null,
+    medianFirstAttackMin: gs.some((g) => g.firstAttack !== null) ? +(median(gs.filter((g) => g.firstAttack !== null).map((g) => g.firstAttack)) / 60).toFixed(1) : null,
+    ...(m.expect !== undefined ? { expectedWinnerSeat: m.expect, expectedWinPct: pct(seatWins[m.expect], done.length) } : {}),
+  };
+}
+const byMap = Object.fromEntries(MAPS.map((map) => {
+  const gs = games.filter((g) => g.map === map), done = gs.filter((g) => g.over && g.winner !== null);
+  return [map, { games: gs.length, timeouts: gs.length - done.length, medianMinutes: done.length ? +(median(done.map((g) => g.time)) / 60).toFixed(1) : null }];
+}));
+const trained = {}, lost = {};
+for (const g of games) { for (const [k, n] of Object.entries(g.trained)) trained[k] = (trained[k] ?? 0) + n; for (const [k, n] of Object.entries(g.lost)) lost[k] = (lost[k] ?? 0) + n; }
+const military = Object.entries(trained).filter(([k]) => k !== "villager"), milTotal = military.reduce((a, [, n]) => a + n, 0);
+const unitShare = Object.fromEntries(military.sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, pct(n, milTotal)]));
+const perf = {
+  avgTickMs: +(games.reduce((a, g) => a + g.avgTickMs, 0) / games.length).toFixed(3),
+  worstTickMs: Math.max(...games.map((g) => g.maxTickMs)),
+  worstGameAvgTickMs: Math.max(...games.map((g) => g.avgTickMs)),
+};
+
+// ---------- anomaly flags (input for the producer / balancer agents) ----------
+const T = { seatSpread: 20, ladderMin: 65, timeoutPct: 20, unitMinShare: 3, unitMaxShare: 45, tickBudgetMs: 10, tickSpikeMs: 50 };
+const flags = [];
+for (const m of MATCHUPS) {
+  const r = byMatchup[m.name];
+  if (pct(r.timeouts, r.games) > T.timeoutPct) flags.push({ kind: "stalemate", matchup: m.name, detail: `${r.timeouts}/${r.games} games had no winner after ${m.minutes ?? minutes} min` });
+  if (m.group === "mirror" && r.finished >= 4) {
+    const spread = Math.max(...r.seatWinPct) - Math.min(...r.seatWinPct), fair = 100 / m.players.length;
+    if (spread > T.seatSpread + fair * (m.players.length > 2 ? 1 : 0)) flags.push({ kind: "seat-unfair", matchup: m.name, detail: `seat win % ${r.seatWinPct.join("/")}` });
+  }
+  if (m.group === "ladder" && r.finished >= 4 && r.expectedWinPct < T.ladderMin) flags.push({ kind: "difficulty-order", matchup: m.name, detail: `stronger AI won only ${r.expectedWinPct}%` });
+}
+for (const [k, share] of Object.entries(unitShare)) {
+  if (share < T.unitMinShare) flags.push({ kind: "unit-unused", unit: k, detail: `${share}% of military trained` });
+  if (share > T.unitMaxShare) flags.push({ kind: "unit-dominant", unit: k, detail: `${share}% of military trained` });
+}
+for (const k of Object.keys((await import(join(here, "..", "shared", "sim.js"))).KINDS))
+  if (["swordsman", "spearman", "archer", "cavalry", "knight", "crossbowman", "ram"].includes(k) && !(k in unitShare)) flags.push({ kind: "unit-unused", unit: k, detail: "never trained" });
+if (perf.worstTickMs > T.tickSpikeMs) flags.push({ kind: "perf-spike", detail: `worst single tick ${perf.worstTickMs} ms > ${T.tickSpikeMs} ms (server tick is 100 ms)` });
+if (perf.worstGameAvgTickMs > T.tickBudgetMs) flags.push({ kind: "perf", detail: `worst game avg tick ${perf.worstGameAvgTickMs} ms > ${T.tickBudgetMs} ms` });
+
+const report = {
+  createdAt: new Date().toISOString(), wallSeconds: +((Date.now() - t0) / 1000).toFixed(1), workers: nWorkers,
+  config: { gamesPerMatchup: perMatchup, minutes, maps: MAPS, thresholds: T },
+  byMatchup, byMap, unitShare, unitsTrained: trained, unitsLost: lost, perf, flags,
+  games: games.map(({ trained, lost, players, ...g }) => ({ ...g, trained })),
+};
+mkdirSync(dirname(out), { recursive: true });
+writeFileSync(out, JSON.stringify(report, null, 1));
+
+if (!quiet) {
+  console.log(`${games.length} games in ${report.wallSeconds}s on ${nWorkers} workers -> ${out}`);
+  for (const [n, r] of Object.entries(byMatchup)) console.log(`  ${n.padEnd(24)} seats ${r.seatWinPct.join("/").padEnd(18)} median ${r.medianMinutes} min, timeouts ${r.timeouts}${r.expectedWinPct !== undefined ? `, stronger wins ${r.expectedWinPct}%` : ""}`);
+  console.log("  unit share %", JSON.stringify(unitShare));
+  console.log("  perf", JSON.stringify(perf));
+  console.log(flags.length ? `  FLAGS:\n${flags.map((f) => `    - ${f.kind}: ${f.matchup ?? f.unit ?? ""} ${f.detail}`).join("\n")}` : "  no flags");
+}
+console.log(JSON.stringify({ report: out, flags: flags.length }));

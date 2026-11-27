@@ -111,6 +111,10 @@ Ctrl+1-9 / 1-9 control groups · Enter chat · G or Alt+click ping · arrows/scr
 - Deploy: `/root/edp-rts` on steve107, `docker compose up -d --build` (clean env; `.env` has `EDP_BROKER_DEMO_PASSWORD`).
 - `node test-sim.mjs normal normal` runs a headless AI-vs-AI game. `node test-walls.mjs` checks walls, gates, breaching, ages and the market. `node test-army.mjs` checks maps, formations and stances. `node test-replay.mjs` checks that recorded games replay identically (run it after any change to `shared/sim.js`). `test-bot.mjs` (run inside the container) plays scripted single-player and multiplayer sessions against a URL.
 
+## Agent dev loop
+`loop/`: headless bot-vs-bot playtests with balance/perf flags (`node loop/playtest.mjs`), hard gates (`node loop/gates.mjs`) and a
+multi-agent orchestrator (producer, builder, balancer, reviewer via `claude -p`, each task in its own git worktree). See `loop/README.md`.
+
 ## Graphics (v2, 13.11)
 - Renderer: PixiJS 7.4.2 (WebGL, self-hosted in `public/vendor`), isometric 2:1 view. Ground = top-down noise texture (`public/art.js`) re-projected with a matrix; fog of war = 80x80 alpha canvas projected the same way (soft edges for free).
 - Sprites are original: low-poly 3D models (`baker/models.js`, Three.js r160) rendered by `baker/baker.html` from an isometric camera with shadows into atlases (`public/assets/*.png|json`). Units: 8 directions x idle/walk/attack/work/death. Each atlas has a `_mask` twin with the team-coloured parts, tinted per player at runtime.
