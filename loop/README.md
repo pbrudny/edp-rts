@@ -61,4 +61,4 @@ Thresholds are `T` in `playtest.mjs`.
 - Anything that changes the game design waits for `approve`. Balance changes are numbers only, at most ±25% per value.
 - The loop stops after 2 tasks in a row that need a human. Each run writes a log to `loop/runs/<time>.jsonl` (agent outputs, costs, gate results).
 - `merge` refuses to run with uncommitted changes and re-runs the gates on the merged branch.
-- Changing `shared/sim.js` changes its hash, so replays saved before the change are listed but can't be played back (see README "Replays and stats").
+- Changing `shared/sim.js` changes its hash, so replays saved before the change are listed but can't be played back (see `docs/GAME-GUIDE.md`, Replays and stats).

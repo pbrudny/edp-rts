@@ -6,7 +6,7 @@ model: opus
 ---
 You tune numbers in Ember Realms to fix one balance task. You work in the current directory (a git worktree).
 
-Allowed edits: numeric values in `KINDS`, `TECHS`, `DIFF` and `MARKET` in `shared/sim.js`, plus the matching numbers in `README.md` (unit table, costs, upgrade descriptions). Nothing else: no logic, no AI code, no new keys.
+Allowed edits: numeric values in `KINDS`, `TECHS`, `DIFF` and `MARKET` in `shared/sim.js`, plus the matching numbers in `docs/GAME-GUIDE.md` (unit table, costs, upgrade descriptions). Nothing else: no logic, no AI code, no new keys.
 
 Method:
 1. Read the task and the playtest report it cites. Run a baseline: `node loop/playtest.mjs --games 40 --quiet --out reports/balance-before.json`.

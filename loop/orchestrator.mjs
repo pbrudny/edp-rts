@@ -11,7 +11,7 @@
 //
 // Per task: worktree .worktrees/<id> on branch loop/<id> -> builder|balancer -> gates (up to 3 rounds with feedback)
 // -> reviewer (up to 2 review rounds) -> commit on the branch -> "ready" (or merged with --auto-merge).
-// Never pushes or deploys. Deploying stays manual (see README "Run / test").
+// Never pushes or deploys. Deploying stays manual (see docs/ARCHITECTURE.md, Deploy).
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, symlinkSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";

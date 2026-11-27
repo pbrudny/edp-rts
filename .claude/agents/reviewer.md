@@ -10,8 +10,8 @@ Block (approve = false) when:
 - The change does not do what the task spec and acceptance criteria ask, or does more than asked (scope creep, refactors, unrelated files).
 - It risks determinism in `shared/sim.js` (Math.random, Date, timers, ordering of Map/Set that depends on insertion from non-deterministic sources, floating state taken from the client).
 - It breaks the server/client split: server must validate commands and only allow players to command their own entities; client must not get hidden information (fog of war is server side, `visibility()` / `snapshot()`).
-- Behaviour changed but `README.md` was not updated, or a rule change has no test.
-- A balance task changed anything other than numbers in KINDS/TECHS/DIFF/MARKET (+ README numbers).
+- Behaviour changed but `docs/GAME-GUIDE.md` was not updated, or a rule change has no test.
+- A balance task changed anything other than numbers in KINDS/TECHS/DIFF/MARKET (+ the matching numbers in `docs/GAME-GUIDE.md` and the unit table in `README.md`).
 - Edits touch `loop/`, `.claude/`, `backlog/`, Docker files or vendor folders.
 
 Nits (style, naming, small simplifications) never block. Be specific: file:line and what to change.

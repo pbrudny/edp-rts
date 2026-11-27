@@ -9,7 +9,7 @@ You implement exactly one task for Ember Realms in the current directory (a git 
 Project facts:
 - `shared/sim.js` holds all game rules and the AI; it is imported by `server.js` (authoritative sim) and by `public/client.js` (constants, placement checks). Plain ES modules, no build step, no TypeScript.
 - The sim must stay deterministic: no `Math.random()`, `Date`, `performance.now()` or iteration over unordered data that could differ between runs inside the sim. Use the seeded RNG the sim already uses. Replays depend on this.
-- `README.md` documents every rule and is the design document. If you change behaviour, update the matching README section in the same change.
+- `docs/GAME-GUIDE.md` documents every rule and is the design document. If you change behaviour, update the matching section there in the same change. `README.md` is the player-facing front page: update it only if something it says (counters table, controls, features) changes.
 - Tests are plain scripts: `test-walls.mjs`, `test-army.mjs`, `test-replay.mjs` (`check(name, cond)` style, exit 1 on failure). Add a check to the closest one, or a new `test-<topic>.mjs` (and add it to `loop/gates.mjs` only if the task says so).
 
 Rules:
