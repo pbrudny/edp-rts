@@ -86,6 +86,12 @@ surpluses and buys what it is short of.
 Workshop: Forging (+2 melee attack), Fletching (+1 attack/range for archers and town centres), Chain mail (+1 armour/arrow armour for soldiers).
 Storehouse: Double-bit axe (+20% wood), Gold mining (+20% gold). Town Centre: Wheelbarrow (carry 15, villagers 10% faster).
 
+## AI economy
+Idle AI villagers go to the resource furthest below its share of the villagers (food 45%, wood 30%, gold 25%). The shares follow the
+stockpiles: a resource above 1500 counts at 0.3x its share, above 800 at 0.6x, below 150 at 1.6x. Every 10 s, if one resource is
+above 1000 while another is below 150, up to 3 gatherers of the surplus move to the short one (`REBALANCE`). At most 2 villagers work
+one farm (`FARM_CAP`); the rest go to another farm with room, or to wood/gold, and more farms get built as the villagers grow.
+
 ## AI attack waves
 The AI keeps its soldiers near the base and sends a wave (every soldier plus its rams, attack-move to the nearest enemy building) once
 `need = min(wave size + 2 per earlier wave, 18)` soldiers wait at home (wave size: easy 10, normal 7, hard 6). After 15 game minutes

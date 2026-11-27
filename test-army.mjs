@@ -1,5 +1,5 @@
 // Rule checks for maps, formations and stances (pure sim, no server). usage: node test-army.mjs
-import { createGame, step, command, KINDS, MAPS } from "./shared/sim.js";
+import { createGame, step, command, canPlace, KINDS, MAPS } from "./shared/sim.js";
 let ok = true; const check = (name, cond) => { console.log((cond ? "PASS " : "FAIL ") + name); ok &&= !!cond; };
 const run = (s, n) => { for (let i = 0; i < n; i++) step(s); };
 const unit = (s, kind, owner, x, y) => { const e = { id: s.nextId++, kind, owner, x, y, hp: KINDS[kind].hp, order: null, path: null, cool: 0, carry: null, scan: 0, idle: 0 }; s.ents.set(e.id, e); return e; };
@@ -85,5 +85,24 @@ function field() {
   check("aggressive: keeps chasing", ag.x > 40);
   command(s, 1, { t: "stance", ids: [a.id], kind: "aggressive" });
   check("can't set the stance of someone else's units", a.stance === "stand");
+}
+
+// --- AI economy: at most 2 villagers per farm, and a food pile with no wood moves gatherers to wood
+{
+  const s = createGame({ seed: 3, map: "plains", players: [{ name: "A" }, { name: "B", ai: "normal" }] });
+  const p = s.players[1], tc = [...s.ents.values()].find((e) => e.owner === 1 && e.kind === "tc");
+  const vills = [...s.ents.values()].filter((e) => e.owner === 1 && e.kind === "villager");
+  for (const e of [...s.ents.values()]) if (e.kind === "berries") e.amount = 0; // berries gone: farms only
+  let spot = null;
+  for (let r = 3; r < 10 && !spot; r++) for (let j = -r; j <= r && !spot; j++) for (let i = -r; i <= r && !spot; i++) if (canPlace(s, "farm", tc.x + i, tc.y + j)) spot = { x: tc.x + i, y: tc.y + j };
+  command(s, 1, { t: "build", ids: [vills[0].id], kind: "farm", ...spot });
+  const farm = [...s.ents.values()].find((e) => e.owner === 1 && e.kind === "farm");
+  farm.built = 1; farm.hp = KINDS.farm.hp;
+  command(s, 1, { t: "target", ids: vills.map((v) => v.id), id: farm.id });
+  p.res = { food: 5000, wood: 20, gold: 500 };
+  run(s, 240); // 24 s: more than one rebalance period
+  const on = (v) => { const o = v.order?.type === "return" ? v.resume : v.order; return o; };
+  const onFarm = vills.filter((v) => on(v)?.type === "gather" && on(v).id === farm.id).length, onWood = vills.filter((v) => on(v)?.type === "tree").length;
+  check(`AI economy: ${vills.length} villagers sent to one farm, ${onFarm} stay (cap 2), ${onWood} go to wood`, onFarm <= 2 && onWood >= 1);
 }
 process.exit(ok ? 0 : 1);

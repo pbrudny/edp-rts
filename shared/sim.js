@@ -72,6 +72,8 @@ export function stat(techs, kind, key) {
 }
 const carryOf = (p) => (p.techs.wheelbarrow ? 15 : CARRY);
 const RATE = { berries: 0.9, farm: 0.6, wood: 0.75, gold: 0.65 };
+const FARM_CAP = 2; // AI: villagers per farm
+const REBALANCE = { every: 10, rich: 1000, poor: 150, move: 3 }; // AI: every 10 s, > 1000 of one resource and < 150 of another moves up to 3 gatherers
 const DIFF = { easy: { gather: 0.75, wave: 10, think: 2.0 }, normal: { gather: 1.0, wave: 7, think: 1.0 }, hard: { gather: 1.3, wave: 6, think: 0.6 } };
 
 // ------------------------------------------------------------------ helpers
@@ -766,18 +768,52 @@ function runAI(s, p) {
   else if (has("barracks").length && has("barracks", true).length < 2 && vills.length >= 15 && p.res.wood > 250) build("barracks");
   // farms when berries near base run out
   const berriesNear = [...s.ents.values()].some((e) => e.kind === "berries" && distToRect(bx, by, e) < 12);
-  const foodWorkers = vills.filter((v) => (v.order?.type === "gather" && ["berries", "farm"].includes(s.ents.get(v.order.id)?.kind)) || v.carry?.type === "food");
   if (!berriesNear && has("farm", true).length < Math.min(6, Math.ceil(vills.length / 3)) && p.res.wood >= 60 && !building("farm")) build("farm");
 
-  // assign idle villagers by need
+  // what each villager gathers (a walk to drop off counts for the resource it goes back to)
+  const task = (v) => { const o = v.order?.type === "return" ? v.resume : v.order; return o?.type === "tree" ? o : o?.type === "gather" ? s.ents.get(o.id) && o : null; };
+  const resOf = (v) => { const o = task(v); return !o ? null : o.type === "tree" ? "wood" : KINDS[s.ents.get(o.id).kind].res ?? "food"; };
+  // at most FARM_CAP villagers per farm: the rest go to another farm or another resource
+  const farmLoad = new Map();
+  for (const v of vills) {
+    const o = task(v), f = o?.type === "gather" ? s.ents.get(o.id) : null;
+    if (f?.kind !== "farm") continue;
+    const n = (farmLoad.get(f.id) ?? 0) + 1; farmLoad.set(f.id, n);
+    if (n > FARM_CAP) { setOrder(v, null); farmLoad.set(f.id, n - 1); }
+  }
+  // food for an AI villager: berries near the base, else the nearest own farm with room
+  const findFood = (v) => {
+    let best = null, bd = 18;
+    for (const e of s.ents.values()) {
+      if (!(e.kind === "berries" || (e.kind === "farm" && e.owner === p.id && e.built >= 1 && e.food > 0 && (farmLoad.get(e.id) ?? 0) < FARM_CAP))) continue;
+      const d = distToRect(bx, by, e); if (d < bd) { bd = d; best = e; }
+    }
+    if (best?.kind === "farm") farmLoad.set(best.id, (farmLoad.get(best.id) ?? 0) + 1);
+    return best ? { type: "gather", id: best.id } : null;
+  };
+  const findRes = (v, res) => res === "food" ? findFood(v) : nearestResource(s, v, res, bx, by, 18) ?? (res === "gold" ? nearestResource(s, v, "gold", bx, by, 45) : nearestResource(s, v, "wood", v.x, v.y, 25) ?? nearestResource(s, v, "wood", bx, by, 45));
+
+  // shares of the villagers per resource, shifted by the stockpiles: less on what piles up, more on what is short
   const want = { food: 0.45, wood: 0.3, gold: 0.25 };
-  const count = { food: foodWorkers.length, wood: 0, gold: 0 };
-  for (const v of vills) { if (v.order?.type === "tree" || v.carry?.type === "wood") count.wood++; else if (v.order?.type === "gather" && s.ents.get(v.order.id)?.kind === "gold") count.gold++; }
+  for (const r of RES) want[r] *= p.res[r] > 1500 ? 0.3 : p.res[r] > 800 ? 0.6 : p.res[r] < 150 ? 1.6 : 1;
+  const count = { food: 0, wood: 0, gold: 0 };
+  for (const v of vills) { const r = resOf(v); if (r) count[r]++; }
+  // periodic rebalance: a big surplus of one resource while another runs short moves a few gatherers over
+  if (s.time - (ai.rebalanced ?? 0) >= REBALANCE.every) {
+    ai.rebalanced = s.time;
+    const rich = RES.reduce((a, r) => (p.res[r] > p.res[a] ? r : a)), poor = RES.reduce((a, r) => (p.res[r] < p.res[a] ? r : a));
+    if (p.res[rich] > REBALANCE.rich && p.res[poor] < REBALANCE.poor && count[rich] > 1)
+      for (const v of vills.filter((v) => resOf(v) === rich).slice(0, Math.min(REBALANCE.move, count[rich] - 1))) {
+        const o = findRes(v, poor); if (!o) break;
+        setOrder(v, o); count[rich]--; count[poor]++;
+      }
+  }
+  // assign idle villagers by need
   for (const v of vills.filter((v) => !v.order)) {
     const res = RES.reduce((a, r) => (count[r] / Math.max(1, vills.length) - want[r] < count[a] / Math.max(1, vills.length) - want[a] ? r : a), "food");
     // near the base first; once that runs dry, further out (a storehouse follows the workers, see below)
-    let o = nearestResource(s, v, res, bx, by, 18) ?? (res === "gold" ? nearestResource(s, v, "gold", bx, by, 45) : null) ?? nearestResource(s, v, "wood", v.x, v.y, 25) ?? nearestResource(s, v, "wood", bx, by, 45) ?? nearestResource(s, v, "gold", bx, by, 45);
-    if (o) { setOrder(v, o); count[res]++; }
+    let o = findRes(v, res) ?? nearestResource(s, v, "wood", v.x, v.y, 25) ?? nearestResource(s, v, "wood", bx, by, 45) ?? nearestResource(s, v, "gold", bx, by, 45);
+    if (o) { setOrder(v, o); count[resOf(v) ?? res]++; }
   }
 
   // a building left half-done (builder killed, stuck or called away): send someone to finish it
