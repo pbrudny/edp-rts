@@ -14,7 +14,7 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=coolify
-      - traefik.http.routers.edp-rts.rule=Host(`rts.codewithpeter.com`)
+      - traefik.http.routers.edp-rts.rule=Host(`rts.atabuilderslab.pl`) || Host(`rts.codewithpeter.com`)
       - traefik.http.routers.edp-rts.entrypoints=http
       - traefik.http.services.edp-rts.loadbalancer.server.port=3000
 volumes:

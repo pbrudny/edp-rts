@@ -2,7 +2,7 @@
 
 **A real-time strategy game you play in the browser.** Build a village, raise an army, and burn every enemy building to the ground. No install, no account.
 
-**[▶ Play now at rts.codewithpeter.com](https://rts.codewithpeter.com)** · [Game guide](docs/GAME-GUIDE.md) · [How it works](docs/ARCHITECTURE.md) · [AI dev loop](loop/README.md)
+**[▶ Play now at rts.atabuilderslab.pl](https://rts.atabuilderslab.pl)** · [Game guide](docs/GAME-GUIDE.md) · [How it works](docs/ARCHITECTURE.md) · [AI dev loop](loop/README.md)
 
 ![A yellow army attacks a blue town](docs/screenshots/town-under-attack.jpg)
 
