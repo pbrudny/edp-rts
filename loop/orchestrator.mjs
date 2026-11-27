@@ -216,7 +216,7 @@ function runLoop() {
 function status() {
   const ts = load();
   if (!ts.length) return console.log("Backlog empty. Run: node loop/orchestrator.mjs triage");
-  for (const t of ts) console.log(`${t.id}  ${t.status.padEnd(17)} p${t.priority} ${t.type.padEnd(8)} ${t.title}${t.blocked ? `  — blocked: ${t.blocked}` : ""}`);
+  for (const t of ts) console.log(`${t.id}  ${t.status.padEnd(17)} p${t.priority} ${t.type.padEnd(8)} ${t.title}${t.blocked && t.status === "blocked" ? `  — blocked: ${t.blocked.replace(/\s+/g, " ").slice(0, 140)}…` : ""}`);
   const ready = ts.filter((t) => t.status === "ready");
   if (ready.length) console.log(`\nReady to merge: ${ready.map((t) => `node loop/orchestrator.mjs merge ${t.id}`).join(" ; ")}`);
 }
