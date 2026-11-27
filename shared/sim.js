@@ -558,6 +558,8 @@ function approach(s, u, goal, range) {
       : (x, y) => Math.hypot(x + 0.5 - goal.x, y + 0.5 - goal.y) <= Math.max(range, 0.75);
     u.path = astar(s, Math.floor(u.x), Math.floor(u.y), isGoal, Math.floor(gx), Math.floor(gy), 5000, u.owner, u.kind !== "villager") ?? [];
     u.pathKey = key; u.repath = goal.moving ? 1 : 4;
+    const tx = Math.floor(u.x), ty = Math.floor(u.y);
+    if (!u.path.length && goal.rect && isGoal(tx, ty)) u.path = [{ x: tx + 0.5, y: ty + 0.5 }]; // on the goal tile but out of range: step to its centre
     if (!u.path.length) { u.stuck = (u.stuck ?? 0) + 1; return false; }
   }
   if (!u.path.length) return false;

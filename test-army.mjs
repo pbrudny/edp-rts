@@ -46,6 +46,20 @@ function field() {
   check("single unit moves at its own speed", solo.x - 30.5 > 5);
 }
 
+// --- a villager on the A* goal tile but just out of range of a farm (next to the town centre) still walks in and builds it
+{
+  const s = field(), tc = [...s.ents.values()].find((e) => e.owner === 0 && e.kind === "tc");
+  for (const e of [...s.ents.values()]) if (e.owner === 0 && e.kind === "villager") s.ents.delete(e.id);
+  for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) s.occ[(tc.y + j) * s.w + tc.x + i] = 0;
+  tc.x = 30; tc.y = 30; for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) s.occ[(30 + j) * s.w + 30 + i] = tc.id;
+  s.players[0].res.wood = 1000;
+  const v = unit(s, "villager", 0, 35.95, 29.05); // tile (35,29) is a goal tile, but the unit is 1.34 from the farm's corner
+  command(s, 0, { t: "build", ids: [v.id], kind: "farm", x: 33, y: 30 });
+  const farm = [...s.ents.values()].find((e) => e.kind === "farm" && e.owner === 0);
+  run(s, 150);
+  check(`stuck farm builder: villager next to the town centre finishes the farm (built ${(farm?.built ?? 0).toFixed(2)})`, farm?.built >= 1);
+}
+
 // --- stances
 {
   const s = field();
