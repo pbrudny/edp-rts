@@ -86,7 +86,7 @@ function schemaErrors(schema, v, path = "") {
   return [];
 }
 function callClaude(name, prompt, cwd) {
-  const r = sh("claude", ["-p", prompt, "--agent", name, "--output-format", "json", "--strict-mcp-config", "--json-schema", JSON.stringify(SCHEMAS[name]),
+  const r = sh("claude", ["-p", prompt, "--agent", name, "--output-format", "json", "--strict-mcp-config", "--add-dir", join(ROOT, "reports"), "--json-schema", JSON.stringify(SCHEMAS[name]),
     "--permission-mode", name === "builder" || name === "balancer" ? "acceptEdits" : "default", "--allowedTools", ...TOOLS[name]],
     cwd, { timeout: 60 * 60_000, env: { ...process.env, CLAUDE_LOOP_AGENT: name } });
   let res;
