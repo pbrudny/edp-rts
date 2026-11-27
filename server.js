@@ -10,7 +10,7 @@ import { readFileSync, mkdirSync } from "node:fs";
 import { extname } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { WebSocketServer } from "ws";
-import { createGame, step, command, snapshot, mapInfo, gameStats, TICK } from "./shared/sim.js";
+import { createGame, step, command, snapshot, mapInfo, gameStats, TICK, MAPS } from "./shared/sim.js";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const BROKER = process.env.BROKER_URL;
@@ -57,14 +57,14 @@ async function loadReplays() {
   }
   replays.sort((a, b) => b.date - a.date);
 }
-const summary = (r) => ({ id: r.id, date: r.date, minutes: r.minutes, winner: r.winner, winners: r.winners ?? (r.winner ? [r.winner] : []), peaceful: !!r.peaceful, players: r.players, playable: r.sim === SIM_HASH });
+const summary = (r) => ({ id: r.id, date: r.date, minutes: r.minutes, winner: r.winner, winners: r.winners ?? (r.winner ? [r.winner] : []), peaceful: !!r.peaceful, map: r.map ?? "lakes", players: r.players, playable: r.sim === SIM_HASH });
 async function saveReplay(room) {
   const s = room.sim;
   if (room.saved || room.replay || !room.slots.some((x) => !x.ai) || s.time < 60) return null; // only real games of 1+ minute
   room.saved = true;
   const r = { v: 1, id: room.id, sim: SIM_HASH, date: Date.now(), seed: s.seed, ticks: s.tick, minutes: +(s.time / 60).toFixed(1),
     winner: s.winner != null ? s.players[s.winner].name : null, winners: s.winTeam != null ? s.players.filter((p) => p.team === s.winTeam).map((p) => p.name) : [],
-    peaceful: s.peaceful, players: s.players.map((p) => ({ name: p.name, color: p.color, team: p.team, ai: p.ai?.diff ?? null })),
+    peaceful: s.peaceful, map: s.map, players: s.players.map((p) => ({ name: p.name, color: p.color, team: p.team, ai: p.ai?.diff ?? null })),
     cmds: room.rec, stats: gameStats(s) };
   try {
     await writeFile(`${REPLAYS}/${r.id}.json`, JSON.stringify(r));
@@ -76,12 +76,14 @@ async function saveReplay(room) {
 async function finish(room) { // game over (or replay end): stats + replay link to everyone still connected
   const id = await saveReplay(room);
   const m = { t: "stats", ...gameStats(room.sim), replay: room.replay ? room.replay.id : id };
-  sendRoom(room, m); for (const w of room.watchers ?? []) if (w.readyState === 1) w.send(JSON.stringify(m));
+  sendRoom(room, m);
 }
 
 // ------------------------------------------------------------------ rooms
 const rooms = new Map();
 const code = () => { const A = "ABCDEFGHJKLMNPQRSTUVWXYZ"; let c; do { c = Array.from({ length: 4 }, () => A[(Math.random() * A.length) | 0]).join(""); } while (rooms.has(c)); return c; };
+const mapOf = (m) => (Object.hasOwn(MAPS, m) ? m : "lakes");
+const MAX_WATCHERS = 8;
 const clean = (n) => String(n ?? "").replace(/[^\p{L}\p{N} _.-]/gu, "").trim().slice(0, 16) || "Player";
 
 const GRACE = 60000; // a player who drops out of a running game keeps their slot this long
@@ -90,19 +92,21 @@ const AI_NAMES = ["Ashford", "Brennmark", "Cold Harbour", "Dunmere"];
 function sendLobby(room) {
   if (!room.slots.some((x) => x.ws === room.host)) room.host = room.slots.find((x) => x.ws)?.ws ?? null;
   const host = room.slots.findIndex((x) => x.ws === room.host);
-  room.slots.forEach((slot, i) => slot.ws?.readyState === 1 && slot.ws.send(JSON.stringify({ t: "lobby", code: room.code, host, you: i, public: !!room.public, slots: room.slots.map((x) => ({ name: x.name, ai: x.ai ?? null, team: x.team })) })));
+  room.slots.forEach((slot, i) => slot.ws?.readyState === 1 && slot.ws.send(JSON.stringify({ t: "lobby", code: room.code, host, you: i, public: !!room.public, map: mapOf(room.mapType), slots: room.slots.map((x) => ({ name: x.name, ai: x.ai ?? null, team: x.team })) })));
 }
 const freeTeam = (room) => [0, 1, 2, 3].find((t) => !room.slots.some((x) => x.team === t)) ?? 0; // new players start on a team of their own
 // open public lobbies for the menu list
-const lobbies = () => [...rooms.values()].filter((r) => r.public && !r.sim && r.slots.length < 4 && r.slots.some((x) => x.ws))
-  .map((r) => ({ code: r.code, host: r.slots.find((x) => x.ws === r.host)?.name ?? "?", players: r.slots.map((x) => x.name), since: r.created }));
+// public games running right now can be watched (spectators see the whole map)
+const lobbies = () => [...rooms.values()].filter((r) => r.public && !r.replay && (r.sim ? !r.sim.over && r.slots.some((x) => x.ws?.readyState === 1) : r.slots.length < 4 && r.slots.some((x) => x.ws)))
+  .map((r) => ({ code: r.code, host: r.slots.find((x) => x.ws === r.host)?.name ?? r.slots.find((x) => !x.ai)?.name ?? "?", players: r.slots.map((x) => x.name), since: r.created, map: mapOf(r.mapType),
+    live: !!r.sim, minutes: r.sim ? Math.floor(r.sim.time / 60) : 0, watching: (r.watchers ?? []).filter((w) => w.readyState === 1).length }));
 const freeAiName = (room) => AI_NAMES.find((n) => !room.slots.some((x) => x.name === n + " AI")) + " AI";
 // every human slot gets a secret token so a reloaded page / dropped connection can take the slot back
 function seat(room, slot) { slot.token = randomUUID(); slot.ws.send(JSON.stringify({ t: "session", code: room.code, token: slot.token })); }
-function sendRoom(room, msg) { const m = JSON.stringify(msg); for (const s of room.slots) if (s.ws?.readyState === 1) s.ws.send(m); }
+function sendRoom(room, msg) { const m = JSON.stringify(msg); for (const s of room.slots) if (s.ws?.readyState === 1) s.ws.send(m); for (const w of room.watchers ?? []) if (w.readyState === 1) w.send(m); }
 
 function startRoom(room, seed) {
-  room.sim = createGame({ seed, peaceful: !!room.peaceful, players: room.slots.map((s, i) => ({ name: s.name, ai: s.ai, team: s.team ?? i })) });
+  room.sim = createGame({ seed, map: mapOf(room.mapType), peaceful: !!room.peaceful, players: room.slots.map((s, i) => ({ name: s.name, ai: s.ai, team: s.team ?? i })) });
   room.id = randomUUID().replace(/-/g, "").slice(0, 10);
   room.rec = []; // [tick, player, command]
   const map = JSON.stringify(mapInfo(room.sim));
@@ -124,6 +128,7 @@ function tickRoom(room) {
     for (const f of ["x", "y", "x2", "y2"]) if (c[f] !== undefined) c[f] = Number(c[f]) || 0;
     if (c.t === "build" || c.t === "tree" || c.t === "wall") for (const f of ["x", "y", "x2", "y2"]) if (c[f] !== undefined) c[f] = Math.floor(c[f]);
     const res = ["food", "wood", "gold"].includes(c.res) ? c.res : undefined, to = Number.isInteger(c.to) ? c.to : undefined;
+    if (c.kind !== undefined && typeof c.kind !== "string") c.kind = undefined;
     const clean = { t: String(c.t), ids: c.ids, id: c.id, kind: c.kind, slot: c.slot, x: c.x, y: c.y, x2: c.x2, y2: c.y2, res, buy: c.buy === undefined ? undefined : !!c.buy, to }; // only known fields go into the replay
     for (const k of Object.keys(clean)) if (clean[k] === undefined) delete clean[k];
     room.rec.push([s.tick, pid, clean]);
@@ -193,12 +198,17 @@ wss.on("connection", (ws) => {
       const slot = room.slots[pid], msg = { t: "chat", from: slot.name, color: pid, text, team: !!m.team };
       return m.team ? sendTeam(room, pid, msg) : sendRoom(room, msg);
     }
+    if (m.t === "chat" && room?.watchers?.includes(ws) && ws.specName) { // spectators: all-chat only
+      if (now - lastChat > 5000) { lastChat = now; chatN = 0; } if (++chatN > 5) return reply({ t: "notice", msg: "Slow down a little." });
+      const text = String(m.text ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 140); if (!text) return;
+      return sendRoom(room, { t: "chat", from: ws.specName + " (watching)", color: -1, text });
+    }
     if (m.t === "mark" && room?.sim && pid >= 0 && !room.sim.over) { // map ping, seen by allies
       if (now - lastMark < 800) return; lastMark = now;
       const x = Math.max(0, Math.min(room.sim.w, Number(m.x) || 0)), y = Math.max(0, Math.min(room.sim.h, Number(m.y) || 0));
       return sendTeam(room, pid, { t: "mark", x, y, from: room.slots[pid].name, color: pid });
     }
-    if (room && !["addAI", "start", "kick", "speed", "team", "public"].includes(m.t)) return;
+    if (room && !["addAI", "start", "kick", "speed", "team", "public", "map"].includes(m.t)) return;
     switch (m.t) {
       case "rejoin": { // take a slot back in a running game (page reload, network drop)
         const r = rooms.get(String(m.code ?? "").toUpperCase());
@@ -221,26 +231,36 @@ wss.on("connection", (ws) => {
           const r = JSON.parse(txt);
           if (r.sim !== SIM_HASH) { rooms.delete(room.code); room = null; return reply({ t: "error", msg: "This replay was recorded with an older version of the game and can't be played back." }); }
           room.slots = r.players.map((p, i) => ({ name: p.name, ai: p.ai, team: p.team ?? i }));
-          room.replay = { id, cmds: r.cmds, ticks: r.ticks, i: 0 }; room.peaceful = !!r.peaceful;
+          room.replay = { id, cmds: r.cmds, ticks: r.ticks, i: 0 }; room.peaceful = !!r.peaceful; room.mapType = mapOf(r.map);
           if (ws.readyState === 1) startRoom(room, r.seed); else rooms.delete(room.code);
         }).catch(() => { rooms.delete(room.code); room = null; reply({ t: "error", msg: "Replay not found." }); });
+        break;
+      }
+      case "spectate": { // watch a running game (public from the list, or any game by its code)
+        const r = rooms.get(String(m.code ?? "").toUpperCase());
+        if (!r?.sim || r.sim.over || r.replay) return reply({ t: "error", msg: r && !r.sim ? "That game hasn't started yet. Join it instead." : "No running game with that code." });
+        r.watchers ??= []; r.watchers = r.watchers.filter((w) => w.readyState === 1);
+        if (r.watchers.length >= MAX_WATCHERS) return reply({ t: "error", msg: "That game already has the most spectators." });
+        ws.specName = clean(m.name); room = r; r.watchers.push(ws);
+        ws.send(r.map); ws.send(JSON.stringify({ t: "start", me: -1, live: true })); ws.send(JSON.stringify(snapshot(r.sim, -1))); // a picture right away, even while the game is paused
+        notice(r, `${ws.specName} is watching.`);
         break;
       }
       case "watch": {
         if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
         const diff = ["easy", "normal", "hard"].includes(m.diff) ? m.diff : "normal";
         const n = Math.min(4, Math.max(2, (Number(m.ais) || 1) + 1));
-        room = { code: code(), slots: [], inbox: [], watchers: [ws], speed: [1, 2, 4, 8].includes(+m.speed) ? +m.speed : 2 };
+        room = { code: code(), slots: [], inbox: [], watchers: [ws], mapType: mapOf(m.map), speed: [1, 2, 4, 8].includes(+m.speed) ? +m.speed : 2 };
         for (let i = 0; i < n; i++) room.slots.push({ name: ["Ashford", "Brennmark", "Cold Harbour", "Dunmere"][i] + " AI", ai: diff });
         rooms.set(room.code, room); startRoom(room);
         break;
       }
-      case "speed": if (room?.watchers?.includes(ws) && [1, 2, 4, 8].includes(+m.speed)) room.speed = +m.speed; break;
+      case "speed": if (room?.watchers?.includes(ws) && !room.slots.some((x) => !x.ai && !room.replay) && [1, 2, 4, 8].includes(+m.speed)) room.speed = +m.speed; break; // not in live games with people
       case "single": {
         if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
         const diff = ["easy", "normal", "hard"].includes(m.diff) ? m.diff : "normal";
         const n = Math.min(3, Math.max(1, Number(m.ais) || 1));
-        room = { code: code(), slots: [{ name: clean(m.name), ws }], inbox: [], peaceful: !!m.peaceful };
+        room = { code: code(), slots: [{ name: clean(m.name), ws }], inbox: [], peaceful: !!m.peaceful, mapType: mapOf(m.map) };
         for (let i = 0; i < n; i++) room.slots.push({ name: AI_NAMES[i] + (room.peaceful ? "" : " AI"), ai: diff });
         // "ally": you and the first computer player against the rest
         room.slots.forEach((x, i) => (x.team = m.teams === "ally" && n >= 2 ? (i < 2 ? 0 : 1) : i));
@@ -249,13 +269,13 @@ wss.on("connection", (ws) => {
       }
       case "create":
         if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
-        room = { code: code(), slots: [{ name: clean(m.name), ws, team: 0 }], inbox: [], host: ws, public: !!m.public, created: Date.now() }; rooms.set(room.code, room); pid = 0;
+        room = { code: code(), slots: [{ name: clean(m.name), ws, team: 0 }], inbox: [], host: ws, public: !!m.public, mapType: mapOf(m.map), created: Date.now() }; rooms.set(room.code, room); pid = 0;
         seat(room, room.slots[0]); sendLobby(room);
         break;
       case "join": {
         const r = rooms.get(String(m.code ?? "").toUpperCase());
         if (!r) return reply({ t: "error", msg: "No game with that code." });
-        if (r.sim) return reply({ t: "error", msg: "That game has already started." });
+        if (r.sim) return reply({ t: "error", msg: "That game has already started. Press Watch to spectate it.", started: true });
         if (r.slots.length >= 4) return reply({ t: "error", msg: "That game is full." });
         room = r; pid = r.slots.length; r.slots.push({ name: clean(m.name), ws, team: freeTeam(r) });
         seat(r, r.slots[pid]); sendLobby(r);
@@ -274,6 +294,9 @@ wss.on("connection", (ws) => {
       case "team": // host sets anyone's team, players their own
         if (room && !room.sim && room.slots[m.slot] && (ws === room.host || room.slots[m.slot].ws === ws) && [0, 1, 2, 3].includes(m.team)) { room.slots[m.slot].team = m.team; sendLobby(room); }
         break;
+      case "map":
+        if (room && ws === room.host && !room.sim) { room.mapType = mapOf(m.map); sendLobby(room); }
+        break;
       case "public":
         if (room && ws === room.host && !room.sim) { room.public = !!m.on; sendLobby(room); }
         break;
@@ -287,6 +310,7 @@ wss.on("connection", (ws) => {
   });
   ws.on("close", () => {
     if (!room) return;
+    if (room.watchers?.includes(ws)) { room.watchers = room.watchers.filter((w) => w !== ws); if (ws.specName) notice(room, `${ws.specName} stopped watching.`); return; }
     if (!room.sim) {
       const i = room.slots.findIndex((s) => s.ws === ws);
       if (i >= 0) room.slots.splice(i, 1);

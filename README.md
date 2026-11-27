@@ -18,6 +18,10 @@ and keep only a small guard. There is no winner: the player builds as long as th
   While every human in a game is disconnected, the game pauses. Opening the game in a second tab moves it there (first tab closes with code 4000).
 - Open games: tick "List in open games" when creating (or the checkbox in the lobby, host only). Public lobbies that aren't full or started
   are listed on the menu (`GET /api/lobbies`, refreshed every 4 s) with a Join button.
+- Spectating: a running public game shows up in the open games list with a Watch button; any running game can be watched by code
+  (Watch next to Join, `{t:"spectate", code, name}`). Spectators see the whole map, can use all-chat (shown as "Name (watching)"),
+  never see team chat, can't give orders and can't change the speed of a game with people in it. Max 8 per game.
+  Games where every player has disconnected (paused) aren't listed.
 - `node test-mp.mjs ws://127.0.0.1:3000` checks all of this (plus teams, chat, pings) against a running server.
 
 ## Teams
@@ -25,6 +29,20 @@ Every lobby slot has a team (1-4); new players and AIs start on a free team (= f
 their own. Start needs at least two teams. Allies share vision, can't attack each other, get neighbouring start corners, and win together
 when they are the last team standing; a defeated player keeps watching their team's vision. Single player with 2+ opponents has
 "You and one ally against the rest". In the sim: `players[i].team`, `allies()` / `enemies()`, `s.winTeam`.
+
+## Maps
+Chosen in the menu (single player, AI battle, new lobby) or by the host in the lobby (`{t:"map", map}`). Same starts and resources, different terrain:
+- Lakes (default): four lakes, scattered woods.
+- Open plains: no water, few small woods; armies meet in the open, wood runs short.
+- Black forest: thick woods with cut paths from every town to a clearing in the middle.
+- River crossing: a river splits north from south with three fords (teams start on the same bank).
+`createGame({ map })`, `MAPS` in `shared/sim.js`; replays store the map. `test-army.mjs` checks that every town can reach every other one on 30 seeds per map.
+
+## Formations and stances
+- A group move (or attack-move) forms up facing the march: melee in front, ranged behind, siege and villagers at the back.
+  A group that starts close together marches at the pace of its slowest unit (the order carries `gs`).
+- Stances (soldiers; Z / X / C or the buttons): Aggressive (default, chase anything in sight), Defensive (chase up to 7 tiles from where the
+  fight started, then walk back), Stand ground (never move to fight, only hit what is in range). Explicit attack orders ignore the stance.
 
 ## Chat, pings, control groups
 - Chat: lobby chat box; in game Enter opens chat (Shift+Enter or Tab = team only), last 6 lines fade after 15 s. Max 140 chars, 5 per 5 s.
@@ -86,12 +104,12 @@ browser --commands (WebSocket)--> server: room --> shared/sim.js (authoritative,
 - Events: `game_started`, `building_placed`, `building_completed`, `unit_trained`, `tech_researched`, `unit_killed`, `building_destroyed`, `attack_launched`, `player_defeated`, `game_over`.
 
 ## Controls
-Left-drag select · right-click move/gather/build/attack · Q W E R T Y build, train or research · A attack-move · S stop · `.` idle villager · H town centre ·
+Left-drag select · right-click move/gather/build/attack · Q W E R T Y U I O build, train or research · A attack-move · Z X C stance · S stop · `.` idle villager · H town centre ·
 Ctrl+1-9 / 1-9 control groups · Enter chat · G or Alt+click ping · arrows/screen edge scroll · wheel zoom · minimap click to jump, right-click to move.
 
 ## Run / test
 - Deploy: `/root/edp-rts` on steve107, `docker compose up -d --build` (clean env; `.env` has `EDP_BROKER_DEMO_PASSWORD`).
-- `node test-sim.mjs normal normal` runs a headless AI-vs-AI game. `node test-walls.mjs` checks walls, gates, breaching, ages and the market. `node test-replay.mjs` checks that recorded games replay identically (run it after any change to `shared/sim.js`). `test-bot.mjs` (run inside the container) plays scripted single-player and multiplayer sessions against a URL.
+- `node test-sim.mjs normal normal` runs a headless AI-vs-AI game. `node test-walls.mjs` checks walls, gates, breaching, ages and the market. `node test-army.mjs` checks maps, formations and stances. `node test-replay.mjs` checks that recorded games replay identically (run it after any change to `shared/sim.js`). `test-bot.mjs` (run inside the container) plays scripted single-player and multiplayer sessions against a URL.
 
 ## Graphics (v2, 13.11)
 - Renderer: PixiJS 7.4.2 (WebGL, self-hosted in `public/vendor`), isometric 2:1 view. Ground = top-down noise texture (`public/art.js`) re-projected with a matrix; fog of war = 80x80 alpha canvas projected the same way (soft edges for free).

@@ -1,5 +1,5 @@
 // Ember Realms client: PixiJS (WebGL) isometric renderer + HUD + input. Server is authoritative.
-import { KINDS, COLORS, TECHS, BUILDABLE, AGES, MARKET, ageOf, line, stat, costOf, timeOf } from "/shared/sim.js";
+import { KINDS, COLORS, TECHS, BUILDABLE, AGES, MARKET, MAPS, ageOf, line, stat, costOf, timeOf } from "/shared/sim.js";
 import * as Art from "/art.js";
 import * as Sfx from "/sfx.js";
 
@@ -13,6 +13,7 @@ const TIPS = { swordsman: "All-rounder. Strong against spearmen and buildings.",
   wall: "Drag to draw a line of wall. Arrows barely scratch it; rams and swordsmen break it.", gate: "Your units and allies walk through, enemies can't. Place it on one of your wall pieces to swap it in.",
   tower: "Shoots arrows at enemy units in range.", market: "Buy and sell food and wood for gold, and send resources to allies." };
 const HOTKEYS = ["q", "w", "e", "r", "t", "y", "u", "i", "o"];
+const STANCES = [["aggressive", "Aggressive", "chase enemies in sight", "z"], ["defensive", "Defensive", "chase a bit, then return", "x"], ["stand", "Stand ground", "fight only in range", "c"]];
 const TINT = COLORS.map((c) => parseInt(c.slice(1), 16));
 
 // ------------------------------------------------------------------ PIXI setup
@@ -65,7 +66,7 @@ const dotTex = (() => { const g = new PIXI.Graphics(); for (let r = 8; r > 0; r-
 const arrowTex = (() => { const g = new PIXI.Graphics(); g.lineStyle(1.6, 0x5a3d22); g.moveTo(0, 3); g.lineTo(16, 3); g.lineStyle(0); g.beginFill(0xc9ced4); g.drawPolygon([20, 3, 15, 0.5, 15, 5.5]); g.endFill(); g.beginFill(0xe8e2d0); g.drawRect(0, 1.5, 3, 3); g.endFill(); return app.renderer.generateTexture(g); })();
 
 // ------------------------------------------------------------------ state
-let ws, map = null, kinds = [], me = -1, snap = null, prev = null, snapAt = 0, playing = false;
+let ws, live = false, map = null, kinds = [], me = -1, snap = null, prev = null, snapAt = 0, playing = false;
 const cam = { x: 0, y: 0, z: 1 };
 let sel = new Set(), mode = null, drag = null, mouse = { x: 0, y: 0, in: false }, keys = new Set(), marks = [];
 const sprites = new Map();     // id -> container
@@ -80,12 +81,12 @@ function connect(first) {
   ws.onopen = () => first && ws.send(JSON.stringify(first));
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.t === "error") { if (m.rejoin === false) return rejoinFailed(); $("err").textContent = m.msg; toast(m.msg); }
+    if (m.t === "error") { if (m.rejoin === false) return rejoinFailed(); $("err").textContent = m.msg; toast(m.msg); if (m.started) $("spectate").classList.add("hint"); }
     else if (m.t === "session") saveSession(m);
     else if (m.t === "notice") toast(m.msg);
     else if (m.t === "lobby") showLobby(m);
     else if (m.t === "map") { if (!map) setMap(m); } // a reconnect resends the map of the game we already have
-    else if (m.t === "start") { reconnectUntil = 0; startGame(m.me); }
+    else if (m.t === "start") { reconnectUntil = 0; live = !!m.live; startGame(m.me); }
     else if (m.t === "s") { if (ready) onSnap(m); else pendingSnap = m; }
     else if (m.t === "stats") showStats(m);
     else if (m.t === "chat") addChat(m);
@@ -122,16 +123,22 @@ const cmd = (c) => send({ t: "cmd", c });
 const nameVal = () => $("name").value.trim() || "Commander";
 try { $("name").value = localStorage.getItem("er-name") ?? ""; } catch {}
 const saveName = () => { try { localStorage.setItem("er-name", $("name").value.trim()); } catch {} };
-$("watch").onclick = () => connect({ t: "watch", diff: $("diff").value, ais: $("ais").value, speed: 2 });
+// map choice: the select in the menu is used for single player, AI battles and new lobbies
+$("mapSel").innerHTML = $("lobbyMap").innerHTML = Object.entries(MAPS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("");
+try { $("mapSel").value = localStorage.getItem("er-map") || "lakes"; } catch {}
+$("mapSel").onchange = () => { try { localStorage.setItem("er-map", $("mapSel").value); } catch {} };
+$("lobbyMap").onchange = () => send({ t: "map", map: $("lobbyMap").value });
+$("watch").onclick = () => connect({ t: "watch", diff: $("diff").value, ais: $("ais").value, speed: 2, map: $("mapSel").value });
+$("spectate").onclick = () => { saveName(); const c = $("joinCode").value.trim().toUpperCase(); if (c.length === 4) connect({ t: "spectate", code: c, name: nameVal() }); else $("err").textContent = "Enter the 4-letter code."; };
 $("speed").onchange = () => send({ t: "speed", speed: +$("speed").value });
-$("playSingle").onclick = () => { saveName(); connect({ t: "single", name: nameVal(), diff: $("diff").value, ais: $("ais").value, peaceful: $("mode").value === "peaceful", teams: $("teamsRow").hidden ? "ffa" : $("teams").value }); };
+$("playSingle").onclick = () => { saveName(); connect({ t: "single", name: nameVal(), diff: $("diff").value, ais: $("ais").value, peaceful: $("mode").value === "peaceful", map: $("mapSel").value, teams: $("teamsRow").hidden ? "ffa" : $("teams").value }); };
 $("mode").onchange = $("ais").onchange = () => { // peaceful: the other players are allies, and difficulty doesn't matter
   const p = $("mode").value === "peaceful";
   for (const o of $("ais").options) o.textContent = `${o.value} ${p ? (o.value === "1" ? "ally" : "allies") : o.value === "1" ? "opponent" : "opponents"}`;
   $("diff").hidden = p; $("modeHint").hidden = !p;
   $("teamsRow").hidden = p || +$("ais").value < 2; // teams need at least two computer players
 };
-$("create").onclick = () => { saveName(); connect({ t: "create", name: nameVal(), public: $("pub").checked }); };
+$("create").onclick = () => { saveName(); connect({ t: "create", name: nameVal(), public: $("pub").checked, map: $("mapSel").value }); };
 $("lobbyPub").onchange = () => send({ t: "public", on: $("lobbyPub").checked });
 $("lobbySend").onclick = () => { const v = $("lobbyMsg").value.trim(); if (v) send({ t: "chat", text: v }); $("lobbyMsg").value = ""; };
 $("lobbyMsg").onkeydown = (e) => e.key === "Enter" && $("lobbySend").click();
@@ -161,6 +168,7 @@ function showLobby(m) {
   $("slots").querySelectorAll("[data-kick]").forEach((b) => (b.onclick = () => send({ t: "kick", slot: +b.dataset.kick })));
   $("slots").querySelectorAll("[data-team]").forEach((el) => (el.onchange = () => send({ t: "team", slot: +el.dataset.team, team: +el.value })));
   $("pubCtl").hidden = !amHost; $("lobbyPub").checked = !!m.public;
+  $("lobbyMap").value = m.map ?? "lakes"; $("lobbyMap").disabled = !amHost;
   const teams = new Set(m.slots.map((s) => s.team));
   $("hostCtl").hidden = !amHost; $("waitHost").hidden = amHost;
   $("start").disabled = m.slots.length < 2 || teams.size < 2;
@@ -172,7 +180,7 @@ let lobbySeen = false;
 // ------------------------------------------------------------------ chat
 const chatLines = [];
 function addChat(m) {
-  const line = { at: Date.now(), html: `${m.team ? `<span class="to">TEAM</span>` : ""}<b class="dot" style="background:${COLORS[m.color] ?? "#888"}"></b><b>${esc(m.from)}:</b> ${esc(m.text)}` };
+  const line = { at: Date.now(), html: `${m.team ? `<span class="to">TEAM</span>` : ""}<b class="dot" style="background:${m.color >= 0 ? COLORS[m.color] : "#888"}"></b><b>${esc(m.from)}:</b> ${esc(m.text)}` };
   chatLines.push(line); if (chatLines.length > 40) chatLines.shift();
   const div = document.createElement("div"); div.innerHTML = line.html;
   $("lobbyChat").append(div); $("lobbyChat").scrollTop = 1e9;
@@ -183,7 +191,7 @@ function renderChat() { // in game: the last 6 lines, fading out after 15 s unle
 }
 setInterval(() => playing && renderChat(), 2000);
 function openChat(team) {
-  if (me < 0) return;
+  if (me < 0 && !live) return;
   $("chat").classList.add("open"); $("chatBox").hidden = false;
   $("chatTo").hidden = !teamGame() || snap?.peaceful; $("chatTo").value = team && teamGame() ? "team" : "all";
   renderChat(); $("chatMsg").focus();
@@ -277,7 +285,8 @@ function startGame(pid) {
   me = pid; playing = true; sel.clear(); peacefulStart = true;
   for (const id of ["menu", "lobby"]) $(id).hidden = true;
   for (const id of ["top", "bottom", "mini", "help", "chat"]) $(id).hidden = false;
-  if (me < 0) { for (const id of ["resign", "resbar", "chat"]) $(id).hidden = true; $("speedCtl").hidden = false; $("help").hidden = true; }
+  if (me < 0) { for (const id of ["resign", "resbar", "chat"]) $(id).hidden = true; $("speedCtl").hidden = live; $("help").hidden = true; $("chat").hidden = !live; }
+  if (map?.map) toast(`Map: ${MAPS[map.map] ?? map.map}${live ? " · you are watching, the whole map is shown" : ""}`);
   setTimeout(() => ($("help").hidden = true), 20000);
 }
 const ent = (id) => snap?.map.get(id);
@@ -525,12 +534,12 @@ addEventListener("keydown", (e) => {
   if (!playing || e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   const digit = /^Digit(\d)$/.exec(e.code);
   if (digit && me >= 0) return groupKey(e, +digit[1]);
-  if (e.key === "Enter" && me >= 0 && !snap?.over) { e.preventDefault(); return openChat(e.shiftKey); }
+  if (e.key === "Enter" && (me >= 0 || live) && !snap?.over) { e.preventDefault(); return openChat(e.shiftKey && me >= 0); }
   keys.add(e.key);
   const k = e.key.toLowerCase();
   if (k === "g" && mouse.in && !e.ctrlKey && !e.metaKey) { const w = screenToWorld(mouse.x, mouse.y); return ping(w.x, w.y); }
   if (k === "escape") { if (mode) mode = null; else { sel.clear(); renderCmds(); } }
-  else if (HOTKEYS.includes(k)) { const b = $("cmds").querySelector(`[data-key="${k}"]`); if (b && !b.disabled) b.click(); }
+  else if (HOTKEYS.includes(k) || ((k === "z" || k === "x" || k === "c") && !e.ctrlKey && !e.metaKey)) { const b = $("cmds").querySelector(`[data-key="${k}"]`); if (b && !b.disabled) b.click(); }
   else if (k === "a" && myUnits().some((u) => kindOf(u) !== "villager")) { mode = { attackMove: true }; toast("Attack-move: left-click a target point."); }
   else if (k === "s") { const ids = myUnits().map((u) => u[0]); if (ids.length) cmd({ t: "stop", ids }); }
   else if (k === "h") { const tc = snap?.ents.find((x) => x[2] === me && kindOf(x) === "tc"); if (tc) { sel = new Set([tc[0]]); centreOnTC(); renderCmds(); } }
@@ -561,7 +570,7 @@ function updateHud() {
   $("players").innerHTML = snap.players.map((p, i) => `<span class="${p.alive ? "" : "dead"}"><b style="background:${p.color}"></b>${esc(p.name)}${i === me ? " (you)" : me >= 0 && ally(i, me) ? " (ally)" : ""}${teamGame() && !snap.peaceful ? ` <small style="color:var(--muted)">T${p.team + 1}</small>` : ""}</span>`).join("");
   renderGroups();
   const s = selected();
-  const key = s.map((e) => e[0] + ":" + (isUnitE(e) ? "" : JSON.stringify(e[8]) + e[6])).join() + "|" + r.food + r.wood + r.gold + "|" + snap.techs + JSON.stringify(snap.market);
+  const key = s.map((e) => e[0] + ":" + (isUnitE(e) ? e[9] ?? 0 : JSON.stringify(e[8]) + e[6])).join() + "|" + r.food + r.wood + r.gold + "|" + snap.techs + JSON.stringify(snap.market);
   renderInfo(s);
   if (key !== lastCmdKey) { lastCmdKey = key; renderCmds(); }
 }
@@ -603,7 +612,12 @@ function renderCmds() {
       add(`Build ${NAMES[kind]}`, lock || costText(KINDS[kind].cost) + (kind === "wall" ? " each" : ""), HOTKEYS[i], () => { mode = { build: kind }; if (kind === "wall") toast("Press and drag to draw the wall."); }, !lock && canAfford(KINDS[kind].cost));
       box.lastChild.title = TIPS[kind] ?? "";
     });
-    if (units.some((u) => kindOf(u) !== "villager")) add("Attack-move", "attack anything on the way", "a", () => { mode = { attackMove: true }; });
+    const army = units.filter((u) => kindOf(u) !== "villager");
+    if (army.length) {
+      add("Attack-move", "attack anything on the way", "a", () => { mode = { attackMove: true }; });
+      const cur = new Set(army.map((u) => u[9] ?? 0)), ids = army.map((u) => u[0]);
+      STANCES.forEach(([st, label, sub, hk], i) => { add(label, cur.size === 1 && cur.has(i) ? "● current" : sub, hk, () => { cmd({ t: "stance", ids, kind: st }); toast(`${label}.`); }); });
+    }
     add("Stop", "cancel orders", "s", () => cmd({ t: "stop", ids: units.map((u) => u[0]) }));
     return;
   }
@@ -845,15 +859,19 @@ async function loadLobbies() { // open public games, refreshed while the menu is
   let list = [];
   try { list = await (await fetch("/api/lobbies")).json(); } catch {}
   $("lobbies").hidden = !list.length;
-  $("lobbyList").innerHTML = list.map((l) => `<div class="slot"><span style="flex:1">${esc(l.host)}'s game <small style="color:var(--muted)">· ${l.players.length}/4 · ${l.players.map(esc).join(", ")}</small></span><button data-join="${esc(l.code)}">Join</button></div>`).join("");
+  const mapName = (l) => esc(MAPS[l.map] ?? "Lakes");
+  $("lobbyList").innerHTML = list.map((l) => l.live
+    ? `<div class="slot"><span style="flex:1">${l.players.map(esc).join(" vs ")} <small style="color:var(--muted)">· live, ${l.minutes} min · ${mapName(l)}${l.watching ? ` · ${l.watching} watching` : ""}</small></span><button data-watch="${esc(l.code)}">Watch</button></div>`
+    : `<div class="slot"><span style="flex:1">${esc(l.host)}'s game <small style="color:var(--muted)">· ${l.players.length}/4 · ${mapName(l)} · ${l.players.map(esc).join(", ")}</small></span><button data-join="${esc(l.code)}">Join</button></div>`).join("");
   $("lobbyList").querySelectorAll("[data-join]").forEach((b) => (b.onclick = () => { $("joinCode").value = b.dataset.join; $("join").click(); }));
+  $("lobbyList").querySelectorAll("[data-watch]").forEach((b) => (b.onclick = () => { $("joinCode").value = b.dataset.watch; $("spectate").click(); }));
 }
 async function loadReplays() {
   let list = [];
   try { list = await (await fetch("/api/replays")).json(); } catch {}
   $("replays").hidden = !list.length;
   const when = (d) => new Date(d).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  $("replayList").innerHTML = list.slice(0, 8).map((r) => `<div class="slot"><span style="flex:1">${r.players.map((p) => `<b style="background:${p.color};display:inline-block;width:9px;height:9px;border-radius:50%"></b> ${esc(p.name)}${(r.winners ?? []).includes(p.name) ? " 👑" : ""}`).join(" &nbsp;")}</span><small style="color:var(--muted)">${r.peaceful ? "peaceful · " : ""}${when(r.date)} · ${r.minutes} min</small><button data-replay="${esc(r.id)}" ${r.playable ? "" : `disabled title="Recorded with an older version of the game"`}>Watch</button></div>`).join("");
+  $("replayList").innerHTML = list.slice(0, 8).map((r) => `<div class="slot"><span style="flex:1">${r.players.map((p) => `<b style="background:${p.color};display:inline-block;width:9px;height:9px;border-radius:50%"></b> ${esc(p.name)}${(r.winners ?? []).includes(p.name) ? " 👑" : ""}`).join(" &nbsp;")}</span><small style="color:var(--muted)">${r.peaceful ? "peaceful · " : ""}${r.map && r.map !== "lakes" ? esc(MAPS[r.map] ?? "") + " · " : ""}${when(r.date)} · ${r.minutes} min</small><button data-replay="${esc(r.id)}" ${r.playable ? "" : `disabled title="Recorded with an older version of the game"`}>Watch</button></div>`).join("");
   $("replayList").querySelectorAll("[data-replay]").forEach((b) => (b.onclick = () => watchReplay(b.dataset.replay)));
 }
 const qs = new URLSearchParams(location.search), qsReplay = qs.get("replay"), qsJoin = (qs.get("join") ?? "").toUpperCase().replace(/[^A-Z]/g, "").slice(0, 4);

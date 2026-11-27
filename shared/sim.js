@@ -176,10 +176,13 @@ function astar(s, sx, sy, isGoal, hx, hy, maxNodes = 5000, owner = -1, breach = 
 export const allies = (s, a, b) => a === b || s.peaceful || (a >= 0 && b >= 0 && s.players[a]?.team === s.players[b]?.team);
 export const enemies = (s, a, b) => a >= 0 && b >= 0 && !allies(s, a, b);
 
-export function createGame({ seed = Date.now() % 1e9, players, peaceful = false }) {
+// map types: same starts and resources, different terrain
+export const MAPS = { lakes: "Lakes", plains: "Open plains", forest: "Black forest", river: "River crossing" };
+export function createGame({ seed = Date.now() % 1e9, players, peaceful = false, map = "lakes" }) {
+  if (!MAPS[map]) map = "lakes";
   const R = rng(seed);
   const s = {
-    seed, peaceful: !!peaceful, rand: rng(seed ^ 0x5bd1e995), w: MAP, h: MAP, tick: 0, time: 0, nextId: 1, over: false, winner: null, timeline: [],
+    seed, map, peaceful: !!peaceful, rand: rng(seed ^ 0x5bd1e995), w: MAP, h: MAP, tick: 0, time: 0, nextId: 1, over: false, winner: null, timeline: [],
     tile: new Uint8Array(MAP * MAP), wood: new Float32Array(MAP * MAP), occ: new Int32Array(MAP * MAP),
     ents: new Map(), events: [], fx: [], treeChanges: [],
     players: players.map((p, i) => ({ id: i, name: p.name, color: COLORS[i], team: Number.isInteger(p.team) ? p.team : i, ai: p.ai ? { diff: p.ai, think: 0, wave: 0 } : null,
@@ -195,11 +198,25 @@ export function createGame({ seed = Date.now() % 1e9, players, peaceful = false 
   }
   const nearStart = (x, y, r) => starts.some(([sx, sy]) => Math.hypot(x - sx, y - sy) < r);
   const blob = (cx, cy, r, fn) => { for (let y = cy - r; y <= cy + r; y++) for (let x = cx - r; x <= cx + r; x++) if (inside(s, x, y) && Math.hypot(x - cx, y - cy) <= r * (0.75 + R() * 0.35)) fn(idx(s, x, y), x, y); };
-  // lakes
-  for (let n = 0; n < 4; n++) { const cx = 15 + ((R() * 50) | 0), cy = 15 + ((R() * 50) | 0); if (!nearStart(cx, cy, 16)) blob(cx, cy, 3 + ((R() * 3) | 0), (i) => (s.tile[i] = 1)); }
-  // forests
-  for (let n = 0; n < 26; n++) { const cx = (R() * MAP) | 0, cy = (R() * MAP) | 0; if (!nearStart(cx, cy, 9)) blob(cx, cy, 2 + ((R() * 4) | 0), (i) => { if (!s.tile[i]) s.wood[i] = 100; }); }
-  for (const [sx, sy] of starts) { const a = R() * Math.PI * 2; blob(Math.round(sx + Math.cos(a) * 10), Math.round(sy + Math.sin(a) * 10), 3, (i) => { if (!s.tile[i]) s.wood[i] = 100; }); }
+  const forest = (n, r0, r1, keep) => { for (let i = 0; i < n; i++) { const cx = (R() * MAP) | 0, cy = (R() * MAP) | 0; if (!nearStart(cx, cy, keep)) blob(cx, cy, r0 + ((R() * (r1 - r0 + 1)) | 0), (i) => { if (!s.tile[i]) s.wood[i] = 100; }); } };
+  const homeWood = (n) => { for (const [sx, sy] of starts) for (let m = 0; m < n; m++) { const a = R() * Math.PI * 2; blob(Math.round(sx + Math.cos(a) * 10), Math.round(sy + Math.sin(a) * 10), 3, (i) => { if (!s.tile[i]) s.wood[i] = 100; }); } };
+  const clearLine = (x0, y0, x1, y1, r) => { const n = Math.ceil(Math.hypot(x1 - x0, y1 - y0)); for (let t = 0; t <= n; t++) { const x = x0 + ((x1 - x0) * t) / n, y = y0 + ((y1 - y0) * t) / n; for (let j = -r; j <= r; j++) for (let i = -r; i <= r; i++) if (inside(s, Math.round(x + i), Math.round(y + j))) s.wood[idx(s, Math.round(x + i), Math.round(y + j))] = 0; } };
+  if (map === "lakes") {
+    for (let n = 0; n < 4; n++) { const cx = 15 + ((R() * 50) | 0), cy = 15 + ((R() * 50) | 0); if (!nearStart(cx, cy, 16)) blob(cx, cy, 3 + ((R() * 3) | 0), (i) => (s.tile[i] = 1)); }
+    forest(26, 2, 5, 9); homeWood(1);
+  } else if (map === "plains") { // wide open: few small woods, nowhere to hide
+    forest(12, 2, 3, 10); homeWood(2);
+  } else if (map === "forest") { // thick woods with a few cut paths between the towns and the centre
+    forest(70, 3, 6, 11); homeWood(1);
+    const mid = MAP / 2; for (const [sx, sy] of starts) { const bend = (R() - 0.5) * 16; clearLine(sx, sy, (sx + mid) / 2 + bend, (sy + mid) / 2 - bend, 2); clearLine((sx + mid) / 2 + bend, (sy + mid) / 2 - bend, mid, mid, 2); }
+    blob(mid, mid, 6, (i) => (s.wood[i] = 0));
+  } else if (map === "river") { // a river splits north from south; three fords cross it
+    const ph = R() * 6.28, fords = [10 + ((R() * 6) | 0), 37 + ((R() * 6) | 0), 63 + ((R() * 6) | 0)];
+    const ry = (x) => MAP / 2 + 3.5 * Math.sin(x * 0.11 + ph);
+    for (let x = 0; x < MAP; x++) { if (fords.some((f) => Math.abs(x - f) <= 2)) continue; for (let y = 0; y < MAP; y++) if (Math.abs(y + 0.5 - ry(x)) < 2.4) s.tile[idx(s, x, y)] = 1; }
+    forest(24, 2, 4, 9); homeWood(1);
+    for (const f of fords) for (let x = f - 4; x <= f + 4; x++) for (let y = Math.floor(ry(f)) - 6; y <= Math.ceil(ry(f)) + 6; y++) if (inside(s, x, y)) s.wood[idx(s, x, y)] = 0;
+  }
   // map border trees
   for (let i = 0; i < MAP; i++) for (const [x, y] of [[i, 0], [i, MAP - 1], [0, i], [MAP - 1, i]]) s.wood[idx(s, x, y)] = 100;
   // clear starts
@@ -246,12 +263,30 @@ export function command(s, pid, c) {
   const units = (c.ids ?? []).map(mine).filter((e) => e && isUnit(e));
   const p = s.players[pid];
   switch (c.t) {
-    case "move": case "attackMove": {
-      const n = units.length, cols = Math.ceil(Math.sqrt(n));
-      units.forEach((u, i) => {
-        const ox = n > 1 ? ((i % cols) - (cols - 1) / 2) * 1.1 : 0, oy = n > 1 ? (((i / cols) | 0) - (cols - 1) / 2) * 1.1 : 0;
-        setOrder(u, { type: c.t, x: c.x + ox, y: c.y + oy });
+    case "move": case "attackMove": { // formation: melee in front, ranged behind, siege and villagers at the back, facing the march
+      const n = units.length;
+      if (n === 1) { setOrder(units[0], { type: c.t, x: c.x, y: c.y }); break; }
+      const cx = units.reduce((a, u) => a + u.x, 0) / n, cy = units.reduce((a, u) => a + u.y, 0) / n;
+      let dx = c.x - cx, dy = c.y - cy; const len = Math.hypot(dx, dy) || 1; dx /= len; dy /= len; if (len < 0.5) { dx = 1; dy = 0; }
+      const rank = (u) => { const k = KINDS[u.kind]; return u.kind === "villager" || k.siege ? 2 : k.range > 2 ? 1 : 0; };
+      const order = [...units].sort((a, b) => rank(a) - rank(b) || a.id - b.id);
+      const cols = Math.max(2, Math.ceil(Math.sqrt(n * 2))), gap = 1.1, slot = []; // each kind of troop starts its own row
+      let row = 0; for (let i = 0; i < n; ) { const r = rank(order[i]); let j = i; while (j < n && rank(order[j]) === r && j - i < cols) j++; for (let m = i; m < j; m++) slot[m] = [row, m - i, j - i]; row++; i = j; }
+      const rows = row;
+      // together: a group that starts close marches at the pace of its slowest member
+      const close = units.every((u) => Math.hypot(u.x - cx, u.y - cy) < 8);
+      const gs = close ? Math.min(...units.map((u) => stat(p.techs, u.kind, "speed"))) : undefined;
+      order.forEach((u, i) => {
+        const [r, c0, inRow] = slot[i], col = c0 - (inRow - 1) / 2;
+        const back = (r - (rows - 1) / 2) * gap;
+        const x = Math.max(0.5, Math.min(s.w - 0.5, c.x - dx * back - dy * col * gap)), y = Math.max(0.5, Math.min(s.h - 0.5, c.y - dy * back + dx * col * gap));
+        setOrder(u, { type: c.t, x, y, gs });
       });
+      break;
+    }
+    case "stance": { // aggressive (default): chase anything in sight; defensive: chase a little, then go back; stand: never move to fight
+      const st = ["aggressive", "defensive", "stand"].includes(c.kind) ? c.kind : null; if (!st) return;
+      for (const u of units) if (u.kind !== "villager") { u.stance = st === "aggressive" ? undefined : st; if (u.order?.auto) setOrder(u, u.prev ?? null); }
       break;
     }
     case "target": {
@@ -526,7 +561,7 @@ function approach(s, u, goal, range) {
     if (!u.path.length) { u.stuck = (u.stuck ?? 0) + 1; return false; }
   }
   if (!u.path.length) return false;
-  let budget = stat(s.players[u.owner].techs, u.kind, "speed") * TICK;
+  let budget = Math.min(stat(s.players[u.owner].techs, u.kind, "speed"), u.order?.gs ?? Infinity) * TICK;
   while (budget > 0 && u.path.length) {
     const n = u.path[0];
     const pc = passCost(s, Math.floor(n.x), Math.floor(n.y), u.owner, u.kind !== "villager");
@@ -550,6 +585,7 @@ function updateUnit(s, u) {
   const k = KINDS[u.kind];
   const o = u.order;
   u.cool -= TICK; u.moving = false; u.anim = null;
+  if (passCost(s, Math.floor(u.x), Math.floor(u.y), u.owner) === Infinity) { const f = nearestFree(s, u.x, u.y); u.x = f.x; u.y = f.y; u.path = null; } // pushed into a building: step out
   const p = s.players[u.owner];
   const mult = p.ai ? DIFF[p.ai.diff].gather : 1;
   const carry = carryOf(p), range = stat(p.techs, u.kind, "range");
@@ -557,8 +593,14 @@ function updateUnit(s, u) {
   // military: auto-acquire targets (rams only look for buildings)
   if (u.kind !== "villager" && (!o || o.type === "attackMove") && (u.scan -= TICK) <= 0) {
     u.scan = 0.5;
-    const t = nearestEnemy(s, u.owner, u.x, u.y, k.sight, false, !!k.siege);
-    if (t) { u.prev = o; u.order = { type: "attack", id: t.id, auto: true }; u.path = null; }
+    const hold = u.stance === "stand" && (!o || o.type !== "attackMove");
+    const t = nearestEnemy(s, u.owner, u.x, u.y, hold ? range : k.sight, false, !!k.siege);
+    if (t) {
+      u.prev = o ?? (u.stance === "defensive" ? { type: "move", x: u.x, y: u.y } : null);
+      u.order = { type: "attack", id: t.id, auto: true }; u.path = null;
+      if (hold) u.order.hold = true;
+      if (u.stance === "defensive") { u.order.ax = u.x; u.order.ay = u.y; }
+    }
   }
   if (!u.order) { u.idle += TICK; return; }
   u.idle = 0;
@@ -573,9 +615,10 @@ function updateUnit(s, u) {
       break;
     case "attack": {
       const t = s.ents.get(ord.id);
-      if (!t || t.hp <= 0 || (k.siege && isUnit(t)) || !enemies(s, u.owner, t.owner) || (u.kind !== "villager" && ord.auto && distTo(u, t) > k.sight + 3)) { u.order = u.prev ?? null; u.prev = null; u.path = null; break; }
+      const leash = t && (ord.hold ? distTo(u, t) > range + 0.3 : ord.ax !== undefined && distTo({ x: ord.ax, y: ord.ay }, t) > 7);
+      if (!t || t.hp <= 0 || (k.siege && isUnit(t)) || !enemies(s, u.owner, t.owner) || (u.kind !== "villager" && ord.auto && distTo(u, t) > k.sight + 3) || (ord.auto && leash)) { u.order = u.prev ?? null; u.prev = null; u.path = null; break; }
       const goal = isUnit(t) ? { x: t.x, y: t.y, moving: true } : { rect: t };
-      if (approach(s, u, goal, range)) {
+      if (ord.hold ? distTo(u, t) <= range : approach(s, u, goal, range)) {
         u.anim = "attack"; u.face = Math.atan2(centre(t).y - u.y, centre(t).x - u.x);
         if (u.cool <= 0) { hit(s, u, t, stat(p.techs, u.kind, "atk")); u.cool = k.cd; if (range > 2) s.fx.push([u.x, u.y, centre(t).x, centre(t).y]); }
       }
@@ -583,6 +626,7 @@ function updateUnit(s, u) {
     }
     case "build": {
       const b = s.ents.get(ord.id);
+      if (b && b.built < 1 && u.stuck > 8) { u.order = null; u.stuck = 0; break; } // can't reach it
       if (!b || b.built >= 1) u.order = b?.kind === "farm" && !u.buildQueue?.length ? { type: "gather", id: b.id } : null;
       else if (approach(s, u, { rect: b }, 1.0)) {
         u.anim = "build";
@@ -691,9 +735,9 @@ function runAI(s, p) {
   const army = mine.filter((e) => isUnit(e) && e.kind !== "villager");
   const has = (kind, any = false) => mine.filter((e) => e.kind === kind && (any || e.built >= 1));
   const { pop, cap } = popOf(s, p.id);
-  const build = (kind) => {
+  const build = (kind, at) => {
     if (!afford(p, KINDS[kind].cost)) return false;
-    const spot = kind === "farm" ? findSpot(s, kind, bx, by, 0, 3) : findSpot(s, kind, bx, by, 1, kind === "house" ? 5 : 6);
+    const spot = at ? findSpot(s, kind, at.x, at.y, 1, 6) : kind === "farm" ? findSpot(s, kind, bx, by, 0, 3) : findSpot(s, kind, bx, by, 1, kind === "house" ? 5 : 6);
     const builder = vills.find((v) => v.order?.type !== "build") ?? vills[0];
     if (!spot || !builder) return false;
     command(s, p.id, { t: "build", ids: [builder.id], kind, x: spot.x, y: spot.y });
@@ -729,17 +773,32 @@ function runAI(s, p) {
   for (const v of vills) { if (v.order?.type === "tree" || v.carry?.type === "wood") count.wood++; else if (v.order?.type === "gather" && s.ents.get(v.order.id)?.kind === "gold") count.gold++; }
   for (const v of vills.filter((v) => !v.order)) {
     const res = RES.reduce((a, r) => (count[r] / Math.max(1, vills.length) - want[r] < count[a] / Math.max(1, vills.length) - want[a] ? r : a), "food");
-    let o = nearestResource(s, v, res, bx, by, 18) ?? nearestResource(s, v, "wood", v.x, v.y, 25);
+    // near the base first; once that runs dry, further out (a storehouse follows the workers, see below)
+    let o = nearestResource(s, v, res, bx, by, 18) ?? (res === "gold" ? nearestResource(s, v, "gold", bx, by, 45) : null) ?? nearestResource(s, v, "wood", v.x, v.y, 25) ?? nearestResource(s, v, "wood", bx, by, 45) ?? nearestResource(s, v, "gold", bx, by, 45);
     if (o) { setOrder(v, o); count[res]++; }
   }
 
+  // a building left half-done (builder killed, stuck or called away): send someone to finish it
+  for (const b of mine.filter((e) => isBuilding(e) && e.built < 1 && e.kind !== "wall"))
+    if (!vills.some((v) => v.order?.type === "build" && v.order.id === b.id)) {
+      const v = vills.filter((v) => v.order?.type !== "build").sort((a, c) => distToRect(a.x, a.y, b) - distToRect(c.x, c.y, b))[0];
+      if (v) setOrder(v, { type: "build", id: b.id });
+    }
+  // workers walking far to drop off: put a storehouse next to them
+  if (!building("storehouse") && p.res.wood >= KINDS.storehouse.cost.wood + 40) {
+    const far = vills.find((v) => { const o = v.order?.type === "return" ? v.resume : v.order; if (!o || (o.type !== "tree" && s.ents.get(o.id)?.kind !== "gold")) return false;
+      const at = o.type === "tree" ? { x: o.x, y: o.y, w: 1, h: 1 } : s.ents.get(o.id), d = dropsite(s, { owner: p.id, x: at.x, y: at.y }, o.type === "tree" ? "wood" : "gold");
+      return !d || distToRect(at.x + 0.5, at.y + 0.5, d) > 12; });
+    if (far) { const o = far.order?.type === "return" ? far.resume : far.order, at = o.type === "tree" ? o : s.ents.get(o.id); build("storehouse", { x: Math.round(at.x), y: Math.round(at.y) }); }
+  }
   // market: turn a big surplus into gold, or gold into what is missing
   const market = has("market")[0];
   if (market) {
     p.market ??= { food: MARKET.start, wood: MARKET.start };
     for (const r of ["food", "wood"]) {
-      if (p.res[r] > 900 && p.res.gold < 200) command(s, p.id, { t: "trade", id: market.id, res: r, buy: false });
-      else if (p.res[r] < 80 && p.res.gold > 450 && p.market[r] < 160) command(s, p.id, { t: "trade", id: market.id, res: r, buy: true });
+      if (p.res[r] > 900 && p.res.gold < 300) command(s, p.id, { t: "trade", id: market.id, res: r, buy: false });
+      else if (r === "wood" && p.res.wood > 600 && p.res.food < 100 && p.res.gold < p.market.food) command(s, p.id, { t: "trade", id: market.id, res: "wood", buy: false }); // wood -> gold -> food
+      else if (p.res[r] < 100 && p.res.gold > (r === "food" ? p.market.food : 450) && p.market[r] < 180) command(s, p.id, { t: "trade", id: market.id, res: r, buy: true });
     }
   }
   // military production: counter what the enemies field (s.rand keeps the game replayable)
@@ -772,8 +831,8 @@ function runAI(s, p) {
     return;
   }
   // attack waves
-  const need = D.wave + ai.wave * 2;
-  if (army.length >= need) {
+  const need = Math.min(D.wave + ai.wave * 2, 18); // waves grow, but not forever
+  if (army.filter((a) => !a.order || a.order.type === "move").length >= need) { // a new wave once enough soldiers wait at home
     const foes = [...s.ents.values()].filter((e) => enemies(s, p.id, e.owner) && s.players[e.owner].alive && isBuilding(e));
     if (foes.length) {
       foes.sort((a, b) => Math.hypot(a.x - bx, a.y - by) - Math.hypot(b.x - bx, b.y - by));
@@ -827,7 +886,7 @@ export function snapshot(s, pid) {
     const k = KIND_LIST.indexOf(e.kind);
     if (isUnit(e)) {
       if (e.owner !== pid && !seen(e.x, e.y)) continue;
-      ents.push([e.id, k, e.owner, Math.round(e.x * 100), Math.round(e.y * 100), Math.ceil(e.hp), e.carry ? RES.indexOf(e.carry.type) : -1, e.anim === "attack" ? 1 : e.anim === "gather" ? 2 : e.anim === "build" ? 3 : e.moving ? 4 : 0, Math.round((e.face ?? 0) * 100) / 100]);
+      ents.push([e.id, k, e.owner, Math.round(e.x * 100), Math.round(e.y * 100), Math.ceil(e.hp), e.carry ? RES.indexOf(e.carry.type) : -1, e.anim === "attack" ? 1 : e.anim === "gather" ? 2 : e.anim === "build" ? 3 : e.moving ? 4 : 0, Math.round((e.face ?? 0) * 100) / 100, e.owner === pid && e.stance ? (e.stance === "defensive" ? 1 : 2) : 0]);
     } else {
       if (e.owner !== pid) { // other buildings and resources: shown once explored
         let known = false;
@@ -847,5 +906,5 @@ export function snapshot(s, pid) {
   };
 }
 export function mapInfo(s) {
-  return { t: "map", w: s.w, h: s.h, tile: Array.from(s.tile), wood: Array.from(s.wood, (v) => (v > 0 ? 1 : 0)), kinds: KIND_LIST };
+  return { t: "map", map: s.map, w: s.w, h: s.h, tile: Array.from(s.tile), wood: Array.from(s.wood, (v) => (v > 0 ? 1 : 0)), kinds: KIND_LIST };
 }

@@ -23,6 +23,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #14110c; col
 #clock { font-variant-numeric: tabular-nums; color: var(--muted); }
 button { font: 700 13px var(--body); color: var(--ink); background: #3a2d1f; border: 1.5px solid var(--edge); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
 button:hover:not(:disabled) { background: #4d3b28; border-color: var(--gold); }
+button.hint { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold); }
 button:disabled, select:disabled { opacity: .45; cursor: not-allowed; }
 button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 #bottom { left: 0; bottom: 0; right: 216px; height: 150px; display: grid; grid-template-columns: minmax(180px, 260px) 1fr; gap: 12px; padding: 10px 14px; background: linear-gradient(rgba(28,22,16,.8), var(--panel)); border-top: 2px solid var(--edge); }
@@ -103,7 +104,7 @@ table.stats thead th { color: var(--muted); font-weight: 700; }
   <button id="mute">Sound on</button>
   <button id="resign">Resign</button>
 </div>
-<div class="hud" id="help" hidden>Drag to select · Right-click (touchpad: two-finger click or Ctrl+click) to move, gather, build, attack · <b>Q W E R T Y U I O</b> build/train/research (drag to draw walls) · <b>A</b> attack-move · <b>.</b> idle villager · <b>H</b> town centre · <b>Space</b> jump to attack or ping · <b>Ctrl+1–9</b> make group, <b>1–9</b> select it (twice: jump) · <b>Enter</b> chat · <b>G</b> or <b>Alt+click</b> ping the map for allies · <b>M</b> sound · arrows / screen edge / two-finger swipe to scroll · wheel, pinch or +/- to zoom</div>
+<div class="hud" id="help" hidden>Drag to select · Right-click (touchpad: two-finger click or Ctrl+click) to move, gather, build, attack · <b>Q W E R T Y U I O</b> build/train/research (drag to draw walls) · <b>A</b> attack-move · <b>Z X C</b> aggressive / defensive / stand ground · <b>.</b> idle villager · <b>H</b> town centre · <b>Space</b> jump to attack or ping · <b>Ctrl+1–9</b> make group, <b>1–9</b> select it (twice: jump) · <b>Enter</b> chat · <b>G</b> or <b>Alt+click</b> ping the map for allies · <b>M</b> sound · arrows / screen edge / two-finger swipe to scroll · wheel, pinch or +/- to zoom</div>
 <div class="hud" id="bottom" hidden><div id="info"></div><div id="cmds"></div></div>
 <div class="hud" id="mini" hidden><canvas id="minimap" width="200" height="100"></canvas></div>
 <div class="hud" id="toast"></div>
@@ -120,6 +121,7 @@ table.stats thead th { color: var(--muted); font-weight: 700; }
       <select id="mode" aria-label="Game mode"><option value="conquest" selected>Conquest</option><option value="peaceful">Peaceful</option></select>
       <select id="diff" aria-label="Difficulty"><option value="easy">Easy</option><option value="normal" selected>Normal</option><option value="hard">Hard</option></select>
       <select id="ais" aria-label="Opponents"><option value="1">1 opponent</option><option value="2">2 opponents</option><option value="3">3 opponents</option></select>
+      <select id="mapSel" aria-label="Map"></select>
       <button class="big" id="playSingle">Play</button>
       <button id="watch" title="Computer players fight each other while you watch">Watch AI battle</button>
     </div>
@@ -131,6 +133,7 @@ table.stats thead th { color: var(--muted); font-weight: 700; }
       <button class="big" id="create">Create game</button>
       <input id="joinCode" maxlength="4" placeholder="CODE" style="width:90px;text-transform:uppercase">
       <button id="join">Join</button>
+      <button id="spectate" title="Watch a game that has already started">Watch</button>
       <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="pub"> List in open games</label>
     </div>
     <div id="lobbies" hidden style="display:grid;gap:6px">
@@ -153,6 +156,7 @@ table.stats thead th { color: var(--muted); font-weight: 700; }
     <div class="row"><input id="inviteLink" readonly aria-label="Invite link" style="flex:1;min-width:0"><button id="copyInvite">Copy invite link</button></div>
     <div id="slots" style="display:grid;gap:6px"></div>
     <p style="font-size:13px">Players on the same team are allies: they share vision, can't hurt each other and win together. Give everyone a different team for free for all.</p>
+    <div class="row"><label for="lobbyMap">Map</label><select id="lobbyMap"></select></div>
     <label id="pubCtl" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="lobbyPub"> Show this game in the open games list</label>
     <div class="chatlog" id="lobbyChat"></div>
     <div class="row"><input id="lobbyMsg" maxlength="140" placeholder="Say something to the lobby…" aria-label="Lobby chat" style="flex:1;min-width:0"><button id="lobbySend">Send</button></div>
