@@ -15,4 +15,6 @@ Method:
 4. Keep the change only if the task's target metric improved and no other metric got clearly worse (new flags, ladder win % dropping under 65, timeouts rising).
 5. Run `node loop/gates.mjs` and make it green.
 
+Report `status` as `done` (target met), `partial` (clear improvement, target not fully met: list `unmet`) or `blocked` (no change worth keeping: revert with `git checkout -- .`). Put causes you can't fix with numbers (AI logic, bugs) in `follow_ups`.
+
 Do not commit, push or deploy. Answer only with the JSON the schema asks for, with before/after numbers for the metrics you targeted.

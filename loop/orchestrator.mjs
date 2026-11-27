@@ -5,7 +5,8 @@
 //   node loop/orchestrator.mjs triage [-n|--count 3] [--note ".."] playtest -> producer -> new tasks in backlog/tasks.jsonl
 //   node loop/orchestrator.mjs run [--max-tasks 1] [--task T001] [--auto-merge] [--triage]
 //   node loop/orchestrator.mjs approve T003 | reject T003 | retry T003
-//   node loop/orchestrator.mjs merge T003                  merge a "ready" branch into the current branch (local only)
+//   node loop/orchestrator.mjs merge T003                  merge a "ready"/"partial-ready" branch into the current branch (local only)
+//   node loop/orchestrator.mjs review T003                 gates + reviewer + commit for uncommitted work left in a task's worktree
 //   node loop/orchestrator.mjs clean T003                  remove a task's worktree (branch is kept)
 //
 // Per task: worktree .worktrees/<id> on branch loop/<id> -> builder|balancer -> gates (up to 3 rounds with feedback)
@@ -51,9 +52,14 @@ const SCHEMAS = {
     title: { type: "string" }, type: { enum: ["balance", "ai", "bugfix", "perf", "feature", "test"] }, spec: { type: "string" },
     acceptance: { type: "array", items: { type: "string" } }, priority: { type: "integer", minimum: 1, maximum: 5 },
     needs_approval: { type: "boolean" }, evidence: { type: "string" }, files_hint: { type: "array", items: { type: "string" } } } } } } },
-  builder: { type: "object", required: ["summary", "files_changed", "tests", "blocked"], properties: {
+  builder: { type: "object", required: ["status", "summary", "files_changed", "tests", "unmet", "follow_ups"], properties: {
+    status: { enum: ["done", "partial", "blocked"], description: "done = all acceptance criteria met; partial = gates green and the change is a net improvement worth keeping, but some criteria are not met; blocked = nothing worth keeping (revert your edits)" },
     summary: { type: "string" }, files_changed: { type: "array", items: { type: "string" } }, tests: { type: "string" },
-    blocked: { type: ["string", "null"], description: "null if done; otherwise why the task can't be done as specified" } } },
+    unmet: { type: "array", items: { type: "string" }, description: "acceptance criteria not met, each with the measured value" },
+    blocked: { type: ["string", "null"], description: "why the task can't be (fully) done as specified; null if done" },
+    follow_ups: { type: "array", description: "new tasks you recommend, e.g. the real cause of an unmet criterion", items: { type: "object", required: ["title", "type", "spec", "acceptance", "evidence"], properties: {
+      title: { type: "string" }, type: { enum: ["balance", "ai", "bugfix", "perf", "feature", "test"] }, spec: { type: "string" },
+      acceptance: { type: "array", items: { type: "string" } }, evidence: { type: "string" } } } } } },
   reviewer: { type: "object", required: ["approve", "blocking", "nits"], properties: {
     approve: { type: "boolean" }, blocking: { type: "array", items: { type: "string" } }, nits: { type: "array", items: { type: "string" } } } },
 };
@@ -139,20 +145,64 @@ function worktree(t) {
   return { dir, branch };
 }
 
+const taskTextOf = (t) => `Task ${t.id}: ${t.title}\nType: ${t.type}\n\nSpec:\n${t.spec}\n\nAcceptance criteria:\n${t.acceptance.map((a) => "- " + a).join("\n")}\n\nEvidence: ${t.evidence}` +
+  (t.report ? `\nPlaytest report it is based on: ${t.report}` : "") + (t.files_hint?.length ? `\nLikely files: ${t.files_hint.join(", ")}` : "");
+const hasChanges = (dir) => !!sh("git", ["status", "--porcelain", "--", ".", ":!reports", ":!node_modules"], dir).out;
+
+function addFollowUps(parent, items = []) {
+  if (!items.length) return [];
+  const all = load(), ids = [];
+  for (const f of items) {
+    const task = { id: nextId(all), title: f.title, type: f.type, spec: f.spec, acceptance: f.acceptance, evidence: f.evidence,
+      priority: parent.priority, needs_approval: f.type === "feature", status: f.type === "feature" ? "awaiting-approval" : "todo",
+      parent: parent.id, createdAt: new Date().toISOString() };
+    all.push(task); ids.push(task.id);
+    console.log(`  + follow-up ${task.id} [${task.type}] ${task.title}`);
+  }
+  save(all);
+  log("follow-ups", { parent: parent.id, ids: ids.join(",") });
+  return ids;
+}
+
+// gates are green and there are changes: reviewer decides; approved -> commit on the task branch.
+// Returns "ready" | "partial-ready" | { blocking } (review rejected).
+function reviewAndCommit(t, built, dir, role) {
+  const partial = built.status === "partial";
+  const verdict = agent("reviewer", `${taskTextOf(t)}\n\nBuilder status: ${built.status}\nBuilder summary: ${built.summary}\nTests: ${built.tests}` +
+    (built.metrics ? `\nBalance metrics before/after: ${JSON.stringify(built.metrics)}` : "") +
+    (partial ? `\n\nThis is a PARTIAL result. Acceptance criteria not met:\n${(built.unmet ?? []).map((u) => "- " + u).join("\n")}\nWhy: ${built.blocked ?? ""}\n` +
+      `Approve only if the change is correct, safe and a clear net improvement on its own, so it is worth merging while the rest becomes follow-up tasks. Unmet criteria alone are not a reason to block.` : "") +
+    `\n\nThe gates (syntax, rule tests, determinism replay, smoke matches + perf budget, server boot) are green. Review the uncommitted diff in this worktree (git diff) against main.`, dir);
+  if (!verdict.approve) return { blocking: verdict.blocking };
+  git(["add", "-A", "--", ".", ":!reports", ":!node_modules"], dir);
+  git(["commit", "-m", `${t.id}: ${t.title}${partial ? " (partial)" : ""}\n\n${built.summary}` +
+    (partial ? `\n\nNot met: ${(built.unmet ?? []).join("; ")}` : "") + `\n\nAutomated loop: ${role} + reviewer, gates green.`], dir);
+  const followUps = addFollowUps(t, built.follow_ups);
+  const st = partial ? "partial-ready" : "ready";
+  update(t.id, { status: st, summary: built.summary, unmet: built.unmet, nits: verdict.nits, metrics: built.metrics, followUps });
+  log("task-" + st, { id: t.id, branch: t.branch ?? `loop/${t.id}` });
+  return st;
+}
+
 function work(t) {
   const { dir, branch } = worktree(t);
   update(t.id, { status: "in-progress", branch });
   log("task-start", { id: t.id, title: t.title, branch });
   const role = t.type === "balance" ? "balancer" : "builder";
-  const taskText = `Task ${t.id}: ${t.title}\nType: ${t.type}\n\nSpec:\n${t.spec}\n\nAcceptance criteria:\n${t.acceptance.map((a) => "- " + a).join("\n")}\n\nEvidence: ${t.evidence}` +
-    (t.report ? `\nPlaytest report it is based on: ${t.report}` : "") + (t.files_hint?.length ? `\nLikely files: ${t.files_hint.join(", ")}` : "");
+  const taskText = taskTextOf(t);
   let feedback = t.reviewNotes ? `A previous attempt was rejected by review:\n${t.reviewNotes}` : "";
 
   for (let review = 1; review <= MAX_REVIEW_ROUNDS; review++) {
     let g = null, built = null;
     for (let round = 1; round <= MAX_BUILD_ROUNDS; round++) {
       built = agent(role, `${taskText}${feedback ? `\n\nFix this first:\n${feedback}` : ""}`, dir);
-      if (built.blocked) { update(t.id, { status: "blocked", blocked: built.blocked }); log("task-blocked", { id: t.id, why: built.blocked }); return "escalated"; }
+      update(t.id, { lastBuild: built });
+      if (built.status === "blocked" || !hasChanges(dir)) {
+        update(t.id, { status: "blocked", blocked: built.blocked ?? "no changes" });
+        log("task-blocked", { id: t.id, why: built.blocked });
+        addFollowUps(t, built.follow_ups);
+        return "escalated";
+      }
       g = gates(dir);
       log("gates", { id: t.id, round, ok: g.ok });
       if (g.ok) break;
@@ -160,17 +210,9 @@ function work(t) {
     }
     if (!g.ok) { update(t.id, { status: "failed", lastGateLog: gateFeedback(g).slice(-4000) }); return "escalated"; }
 
-    const verdict = agent("reviewer", `${taskText}\n\nBuilder summary: ${built.summary}\nTests: ${built.tests}` +
-      (built.metrics ? `\nBalance metrics before/after: ${JSON.stringify(built.metrics)}` : "") +
-      `\n\nThe gates (syntax, rule tests, determinism replay, smoke matches + perf budget, server boot) are green. Review the diff in this worktree against main.`, dir);
-    if (verdict.approve) {
-      git(["add", "-A", "--", ".", ":!reports", ":!node_modules"], dir);
-      git(["commit", "-m", `${t.id}: ${t.title}\n\n${built.summary}\n\nAutomated loop: ${role} + reviewer, gates green.`], dir);
-      update(t.id, { status: "ready", summary: built.summary, nits: verdict.nits, metrics: built.metrics });
-      log("task-ready", { id: t.id, branch });
-      return "ready";
-    }
-    feedback = `Code review blocked the change:\n${verdict.blocking.map((b) => "- " + b).join("\n")}`;
+    const r = reviewAndCommit(t, built, dir, role);
+    if (typeof r === "string") return r === "ready" ? "ready" : "escalated"; // partial needs a human look before merging
+    feedback = `Code review blocked the change:\n${r.blocking.map((b) => "- " + b).join("\n")}`;
     update(t.id, { reviewNotes: feedback });
     log("review-blocked", { id: t.id, review });
   }
@@ -178,9 +220,23 @@ function work(t) {
   return "escalated";
 }
 
+// Resume a task whose worktree has uncommitted builder work (e.g. blocked/failed after edits): gates -> reviewer -> commit.
+function reviewOnly(id) {
+  const t = load().find((x) => x.id === id);
+  if (!t?.lastBuild) throw new Error(`${id} has no lastBuild (builder output) to review`);
+  const { dir } = worktree(t);
+  if (!hasChanges(dir)) throw new Error(`.worktrees/${id} has no uncommitted changes`);
+  const built = { ...t.lastBuild, status: t.lastBuild.status === "done" ? "done" : "partial" };
+  const g = gates(dir);
+  log("gates", { id, ok: g.ok });
+  if (!g.ok) { update(id, { status: "failed", lastGateLog: gateFeedback(g).slice(-4000) }); return console.log(gateFeedback(g)); }
+  const r = reviewAndCommit(t, built, dir, t.type === "balance" ? "balancer" : "builder");
+  if (typeof r !== "string") { update(id, { status: "review-failed", reviewNotes: r.blocking.join("\n") }); console.log("Review blocked:\n" + r.blocking.map((b) => "- " + b).join("\n")); }
+}
+
 function merge(id) {
   const t = load().find((x) => x.id === id);
-  if (t?.status !== "ready") throw new Error(`${id} is not ready (status ${t?.status})`);
+  if (!["ready", "partial-ready"].includes(t?.status)) throw new Error(`${id} is not ready (status ${t?.status})`);
   const dirty = sh("git", ["status", "--porcelain", "--untracked-files=no"]).out.split("\n").filter((l) => l && !l.endsWith("backlog/tasks.jsonl"));
   if (dirty.length) throw new Error("main working tree has uncommitted changes; commit or stash them first:\n" + dirty.join("\n"));
   git(["merge", "--no-ff", t.branch, "-m", `Merge ${t.branch}: ${t.title}`]);
@@ -216,8 +272,8 @@ function runLoop() {
 function status() {
   const ts = load();
   if (!ts.length) return console.log("Backlog empty. Run: node loop/orchestrator.mjs triage");
-  for (const t of ts) console.log(`${t.id}  ${t.status.padEnd(17)} p${t.priority} ${t.type.padEnd(8)} ${t.title}${t.blocked && t.status === "blocked" ? `  — blocked: ${t.blocked.replace(/\s+/g, " ").slice(0, 140)}…` : ""}`);
-  const ready = ts.filter((t) => t.status === "ready");
+  for (const t of ts) console.log(`${t.id}  ${t.status.padEnd(17)} p${t.priority} ${t.type.padEnd(8)} ${t.title}${t.unmet?.length && t.status === "partial-ready" ? `  — not met: ${t.unmet.join("; ").slice(0, 140)}` : ""}${t.blocked && t.status === "blocked" ? `  — blocked: ${t.blocked.replace(/\s+/g, " ").slice(0, 140)}…` : ""}`);
+  const ready = ts.filter((t) => t.status === "ready" || t.status === "partial-ready");
   if (ready.length) console.log(`\nReady to merge: ${ready.map((t) => `node loop/orchestrator.mjs merge ${t.id}`).join(" ; ")}`);
 }
 
@@ -230,6 +286,7 @@ switch (cmd) {
   case "reject": update(id, { status: "rejected" }); status(); break;
   case "retry": update(id, { status: "todo" }); status(); break;
   case "merge": merge(id); status(); break;
+  case "review": reviewOnly(id); console.log(`~$${spentUsd.toFixed(2)} reported by claude`); status(); break;
   case "clean": git(["worktree", "remove", "--force", join(WT, id)]); console.log(`removed .worktrees/${id} (branch loop/${id} kept)`); break;
-  default: console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 11).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+  default: console.log(readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 12).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
 }

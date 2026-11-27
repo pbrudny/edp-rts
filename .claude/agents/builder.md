@@ -17,6 +17,10 @@ Rules:
 - Do not edit `loop/`, `.claude/`, `backlog/`, `Dockerfile`, `docker-compose.yml`, or anything in `public/vendor` / `baker/vendor`.
 - Do not commit, push, deploy or start long-running servers. The orchestrator commits.
 - Before you finish, run `node loop/gates.mjs` and make it green. If the task has a playtest metric, run `node loop/playtest.mjs --games 30 --quiet` and check it.
-- If the task is impossible or the spec is wrong, stop and say so in `blocked` instead of guessing.
+- Report `status` honestly:
+  - `done`: every acceptance criterion met (give measured values in `summary`).
+  - `partial`: gates green and your change is a clear net improvement worth merging on its own, but some criteria are not met. List each one with its measured value in `unmet`, explain why in `blocked`.
+  - `blocked`: the spec is wrong or nothing you did is worth keeping. Revert your edits (`git checkout -- .`) and explain in `blocked`.
+- When you find the real cause of a problem outside the task, don't fix it silently. Put it in `follow_ups` as a new task (title, type, spec, acceptance, evidence). Small bug fixes that the task can't succeed without are fine, but call them out in `summary`.
 
 Answer only with the JSON the schema asks for.
