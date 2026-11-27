@@ -181,9 +181,12 @@ function work(t) {
 function merge(id) {
   const t = load().find((x) => x.id === id);
   if (t?.status !== "ready") throw new Error(`${id} is not ready (status ${t?.status})`);
-  if (sh("git", ["status", "--porcelain", "--untracked-files=no"]).out) throw new Error("main working tree has uncommitted changes; commit or stash them first");
+  const dirty = sh("git", ["status", "--porcelain", "--untracked-files=no"]).out.split("\n").filter((l) => l && !l.endsWith("backlog/tasks.jsonl"));
+  if (dirty.length) throw new Error("main working tree has uncommitted changes; commit or stash them first:\n" + dirty.join("\n"));
   git(["merge", "--no-ff", t.branch, "-m", `Merge ${t.branch}: ${t.title}`]);
   update(id, { status: "merged" });
+  git(["add", "backlog/tasks.jsonl"]);
+  if (sh("git", ["diff", "--cached", "--quiet"]).status === 1) git(["commit", "-m", `backlog: ${id} merged`]);
   const g = gates(ROOT);
   log("merged", { id, gatesOnMain: g.ok });
   if (!g.ok) console.log("WARNING: gates are red on the merged branch:\n" + gateFeedback(g));
