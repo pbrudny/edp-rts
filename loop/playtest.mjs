@@ -20,12 +20,20 @@ const MATCHUPS = [
 ];
 
 // One game. Used by the workers (metrics) and by the main thread (solo re-runs for timing).
-function runGame({ createGame, step }, job) {
+function runGame({ createGame, step, KINDS }, job) {
   {
     const players = job.players.map((d, i) => ({ name: `P${i}`, ai: d }));
     const s = createGame({ seed: job.seed, map: job.map, players });
     const trained = {}, lost = {}, firstAttack = {};
-    let maxTick = 0;
+    let maxTick = 0, at15 = null;
+    // per-player state: resources, villagers, army, real buildings (walls/gates don't count), techs
+    const state = () => s.players.map((p) => {
+      const mine = [...s.ents.values()].filter((e) => e.owner === p.id);
+      const units = mine.filter((e) => KINDS[e.kind].type === "unit");
+      return { seat: p.id, ai: p.ai?.diff, alive: p.alive, res: Object.fromEntries(Object.entries(p.res).map(([k, v]) => [k, Math.round(v)])),
+        villagers: units.filter((e) => e.kind === "villager").length, army: units.filter((e) => e.kind !== "villager").length,
+        buildings: mine.filter((e) => KINDS[e.kind].type === "building" && !KINDS[e.kind].minor).length, techs: Object.keys(p.techs).length };
+    });
     const t0 = performance.now();
     while (!s.over && s.time < job.minutes * 60) {
       const a = performance.now();
@@ -37,6 +45,7 @@ function runGame({ createGame, step }, job) {
         else if (e.type === "attack_launched" && firstAttack[e.player] === undefined) firstAttack[e.player] = Math.round(s.time);
       }
       s.events = [];
+      if (!at15 && s.time >= 15 * 60) at15 = state();
     }
     const ms = performance.now() - t0;
     return ({
@@ -44,6 +53,7 @@ function runGame({ createGame, step }, job) {
       simMs: Math.round(ms), avgTickMs: +(ms / Math.max(1, s.tick)).toFixed(3), maxTickMs: +maxTick.toFixed(2),
       trained, lost, firstAttack: Object.values(firstAttack).length ? Math.min(...Object.values(firstAttack)) : null,
       players: s.players.map((p) => ({ seat: p.id, ai: p.ai?.diff, alive: p.alive, ...p.stats })),
+      end: state(), at15,
     });
   }
 }
@@ -112,6 +122,16 @@ const perf = {
 
 // ---------- anomaly flags (input for the producer / balancer agents) ----------
 const T = { seatSpread: 20, ladderMin: 65, timeoutPct: 20, unitMinShare: 3, unitMaxShare: 45, tickBudgetMs: 10, tickSpikeMs: 50 };
+// stalemate diagnosis: what the alive players look like when a game runs out of time
+const stalls = games.filter((g) => !(g.over && g.winner !== null)).map((g) => {
+  const alive = g.end.filter((p) => p.alive), armies = alive.map((p) => p.army);
+  return { matchup: g.matchup, map: g.map, seed: g.seed, armyRatio: armies.length > 1 ? +(Math.max(...armies) / Math.max(1, Math.min(...armies))).toFixed(1) : null,
+    players: alive.map(({ seat, ai, res, villagers, army, buildings, techs }) => ({ seat, ai, res, villagers, army, buildings, techs })) };
+});
+// economy stuck: at 15 min an alive player sits on > 3000 of one resource and < 100 of another
+const lopsided = (p) => { const v = Object.values(p.res); return p.alive && Math.max(...v) > 3000 && Math.min(...v) < 100; };
+const economyStuck = games.flatMap((g) => (g.at15 ?? []).filter(lopsided).map((p) => ({ matchup: g.matchup, map: g.map, seed: g.seed, seat: p.seat, ai: p.ai, res: p.res, villagers: p.villagers, army: p.army })));
+
 const flags = [];
 for (const m of MATCHUPS) {
   const r = byMatchup[m.name];
@@ -128,6 +148,12 @@ for (const [k, share] of Object.entries(unitShare)) {
 }
 for (const k of Object.keys(sim.KINDS))
   if (["swordsman", "spearman", "archer", "cavalry", "knight", "crossbowman", "ram"].includes(k) && !(k in unitShare)) flags.push({ kind: "unit-unused", unit: k, detail: "never trained" });
+if (economyStuck.length) flags.push({ kind: "economy-stuck", detail: `${economyStuck.length} player(s) in ${new Set(economyStuck.map((e) => e.matchup + e.seed)).size} game(s) had > 3000 of one resource and < 100 of another at 15 min (see economyStuck)` });
+for (const m of MATCHUPS) {
+  const st = stalls.filter((x) => x.matchup === m.name && x.armyRatio !== null);
+  const big = st.filter((x) => x.armyRatio >= 2);
+  if (st.length >= 2 && big.length / st.length >= 0.5) flags.push({ kind: "no-finish", matchup: m.name, detail: `${big.length}/${st.length} timed-out games had one army >= 2x the other: the stronger side doesn't finish (see stalls)` });
+}
 if (perf.worstTickMs > T.tickSpikeMs) flags.push({ kind: "perf-spike", detail: `worst single tick ${perf.worstTickMs} ms > ${T.tickSpikeMs} ms (server tick is 100 ms)` });
 if (perf.worstGameAvgTickMs > T.tickBudgetMs) flags.push({ kind: "perf", detail: `worst game avg tick ${perf.worstGameAvgTickMs} ms > ${T.tickBudgetMs} ms` });
 
@@ -135,7 +161,8 @@ const report = {
   createdAt: new Date().toISOString(), wallSeconds: +((Date.now() - t0) / 1000).toFixed(1), workers: nWorkers,
   config: { gamesPerMatchup: perMatchup, minutes, maps: MAPS, thresholds: T },
   byMatchup, byMap, unitShare, unitsTrained: trained, unitsLost: lost, perf, flags,
-  games: games.map(({ trained, lost, players, ...g }) => ({ ...g, trained })),
+  stalls, economyStuck,
+  games: games.map(({ trained, lost, players, at15, ...g }) => ({ ...g, trained })),
 };
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, JSON.stringify(report, null, 1));
@@ -144,6 +171,8 @@ if (!quiet) {
   console.log(`${games.length} games in ${report.wallSeconds}s on ${nWorkers} workers -> ${out}`);
   for (const [n, r] of Object.entries(byMatchup)) console.log(`  ${n.padEnd(24)} seats ${r.seatWinPct.join("/").padEnd(18)} median ${r.medianMinutes} min, timeouts ${r.timeouts}${r.expectedWinPct !== undefined ? `, stronger wins ${r.expectedWinPct}%` : ""}`);
   console.log("  unit share %", JSON.stringify(unitShare));
+  for (const x of stalls) console.log(`  stall ${x.matchup} ${x.map} ${x.seed}: army ratio ${x.armyRatio} | ${x.players.map((p) => `${p.ai} v${p.villagers} a${p.army} b${p.buildings} F${p.res.food} W${p.res.wood} G${p.res.gold}`).join(" vs ")}`);
+  if (economyStuck.length) console.log(`  economy stuck at 15 min: ${economyStuck.map((e) => `${e.ai}@${e.matchup}/${e.seed} F${e.res.food} W${e.res.wood} G${e.res.gold}`).join(", ")}`);
   console.log("  perf (solo re-runs)", JSON.stringify({ avgTickMs: perf.avgTickMs, worstTickMs: perf.worstTickMs, worstGameAvgTickMs: perf.worstGameAvgTickMs, parallelWorstTickMs: perf.parallelWorstTickMs }));
   console.log(flags.length ? `  FLAGS:\n${flags.map((f) => `    - ${f.kind}: ${f.matchup ?? f.unit ?? ""} ${f.detail}`).join("\n")}` : "  no flags");
 }

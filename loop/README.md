@@ -48,7 +48,9 @@ Matchups: normal/hard mirrors 1v1, a normal 4-player FFA (40 min), and two ladde
 | `seat-unfair` | in a mirror, start seats win at very different rates |
 | `difficulty-order` | the stronger AI wins less than 65% |
 | `unit-unused` / `unit-dominant` | a military unit is under 3% / over 45% of everything trained |
-| `perf` / `perf-spike` | average tick over 10 ms in a game / a single tick over 50 ms (the server ticks every 100 ms) |
+| `perf` / `perf-spike` | average tick over 10 ms / a single tick over 50 ms (the server ticks every 100 ms), timed by re-running the slowest games alone |
+| `economy-stuck` | at 15 min a player has > 3000 of one resource and < 100 of another (`economyStuck` lists them) |
+| `no-finish` | in at least half of the timed-out games of a matchup one army is 2x the other (`stalls` lists every timed-out game with per-player resources, villagers, army, buildings) |
 
 Thresholds are `T` in `playtest.mjs`.
 
