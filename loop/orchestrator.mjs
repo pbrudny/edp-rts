@@ -198,7 +198,7 @@ function reviewAndCommit(t, built, dir, role) {
       `Approve only if the change is correct, safe and a clear net improvement on its own, so it is worth merging while the rest becomes follow-up tasks. Unmet criteria alone are not a reason to block.` : "") +
     `\n\nThe gates (syntax, rule tests, determinism replay, smoke matches + perf budget, server boot) are green. Review the uncommitted diff in this worktree (git diff) against main.`, dir);
   if (!verdict.approve) return { blocking: verdict.blocking };
-  git(["add", "-A", "--", ".", ":!reports", ":!node_modules"], dir);
+  git(["add", "-A"], dir); // reports/ and node_modules are gitignored
   git(["commit", "-m", `${t.id}: ${t.title}${partial ? " (partial)" : ""}\n\n${built.summary}` +
     (partial ? `\n\nNot met: ${(built.unmet ?? []).join("; ")}` : "") + `\n\nAutomated loop: ${role} + reviewer, gates green.`], dir);
   const followUps = addFollowUps(t, built.follow_ups);
