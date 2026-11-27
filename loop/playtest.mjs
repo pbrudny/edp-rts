@@ -19,9 +19,9 @@ const MATCHUPS = [
   { name: "ladder-normal-vs-easy", group: "ladder", players: ["normal", "easy"], expect: 0 },
 ];
 
-if (!isMainThread) {
-  const { createGame, step } = await import(join(here, "..", "shared", "sim.js"));
-  for (const job of workerData.jobs) {
+// One game. Used by the workers (metrics) and by the main thread (solo re-runs for timing).
+function runGame({ createGame, step }, job) {
+  {
     const players = job.players.map((d, i) => ({ name: `P${i}`, ai: d }));
     const s = createGame({ seed: job.seed, map: job.map, players });
     const trained = {}, lost = {}, firstAttack = {};
@@ -39,13 +39,18 @@ if (!isMainThread) {
       s.events = [];
     }
     const ms = performance.now() - t0;
-    parentPort.postMessage({
+    return ({
       ...job, over: s.over, winner: s.winner ?? null, time: Math.round(s.time), ticks: s.tick,
       simMs: Math.round(ms), avgTickMs: +(ms / Math.max(1, s.tick)).toFixed(3), maxTickMs: +maxTick.toFixed(2),
       trained, lost, firstAttack: Object.values(firstAttack).length ? Math.min(...Object.values(firstAttack)) : null,
       players: s.players.map((p) => ({ seat: p.id, ai: p.ai?.diff, alive: p.alive, ...p.stats })),
     });
   }
+}
+
+if (!isMainThread) {
+  const sim = await import(join(here, "..", "shared", "sim.js"));
+  for (const job of workerData.jobs) parentPort.postMessage(runGame(sim, job));
   process.exit(0);
 }
 
@@ -91,10 +96,18 @@ const trained = {}, lost = {};
 for (const g of games) { for (const [k, n] of Object.entries(g.trained)) trained[k] = (trained[k] ?? 0) + n; for (const [k, n] of Object.entries(g.lost)) lost[k] = (lost[k] ?? 0) + n; }
 const military = Object.entries(trained).filter(([k]) => k !== "villager"), milTotal = military.reduce((a, [, n]) => a + n, 0);
 const unitShare = Object.fromEntries(military.sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, pct(n, milTotal)]));
+// Timing in parallel workers is wall clock and the OS pauses threads, so a busy machine shows fake 50-200 ms ticks.
+// The perf numbers therefore come from re-running the slowest games alone in this thread (same seed = same game).
+const sim = await import(join(here, "..", "shared", "sim.js"));
+const suspects = [...new Set([...games].sort((a, b) => b.maxTickMs - a.maxTickMs).slice(0, 3)
+  .concat([...games].sort((a, b) => b.avgTickMs - a.avgTickMs).slice(0, 1)))];
+const solo = suspects.map((g) => { const r = runGame(sim, jobs.find((j) => j.matchup === g.matchup && j.seed === g.seed)); return { matchup: g.matchup, map: g.map, seed: g.seed, parallelMaxTickMs: g.maxTickMs, maxTickMs: r.maxTickMs, avgTickMs: r.avgTickMs }; });
 const perf = {
-  avgTickMs: +(games.reduce((a, g) => a + g.avgTickMs, 0) / games.length).toFixed(3),
-  worstTickMs: Math.max(...games.map((g) => g.maxTickMs)),
-  worstGameAvgTickMs: Math.max(...games.map((g) => g.avgTickMs)),
+  avgTickMs: +(games.reduce((a, g) => a + g.avgTickMs, 0) / games.length).toFixed(3), // parallel, indicative only
+  worstTickMs: Math.max(...solo.map((g) => g.maxTickMs)),
+  worstGameAvgTickMs: Math.max(...solo.map((g) => g.avgTickMs)),
+  parallelWorstTickMs: Math.max(...games.map((g) => g.maxTickMs)),
+  solo,
 };
 
 // ---------- anomaly flags (input for the producer / balancer agents) ----------
@@ -113,7 +126,7 @@ for (const [k, share] of Object.entries(unitShare)) {
   if (share < T.unitMinShare) flags.push({ kind: "unit-unused", unit: k, detail: `${share}% of military trained` });
   if (share > T.unitMaxShare) flags.push({ kind: "unit-dominant", unit: k, detail: `${share}% of military trained` });
 }
-for (const k of Object.keys((await import(join(here, "..", "shared", "sim.js"))).KINDS))
+for (const k of Object.keys(sim.KINDS))
   if (["swordsman", "spearman", "archer", "cavalry", "knight", "crossbowman", "ram"].includes(k) && !(k in unitShare)) flags.push({ kind: "unit-unused", unit: k, detail: "never trained" });
 if (perf.worstTickMs > T.tickSpikeMs) flags.push({ kind: "perf-spike", detail: `worst single tick ${perf.worstTickMs} ms > ${T.tickSpikeMs} ms (server tick is 100 ms)` });
 if (perf.worstGameAvgTickMs > T.tickBudgetMs) flags.push({ kind: "perf", detail: `worst game avg tick ${perf.worstGameAvgTickMs} ms > ${T.tickBudgetMs} ms` });
@@ -131,7 +144,7 @@ if (!quiet) {
   console.log(`${games.length} games in ${report.wallSeconds}s on ${nWorkers} workers -> ${out}`);
   for (const [n, r] of Object.entries(byMatchup)) console.log(`  ${n.padEnd(24)} seats ${r.seatWinPct.join("/").padEnd(18)} median ${r.medianMinutes} min, timeouts ${r.timeouts}${r.expectedWinPct !== undefined ? `, stronger wins ${r.expectedWinPct}%` : ""}`);
   console.log("  unit share %", JSON.stringify(unitShare));
-  console.log("  perf", JSON.stringify(perf));
+  console.log("  perf (solo re-runs)", JSON.stringify({ avgTickMs: perf.avgTickMs, worstTickMs: perf.worstTickMs, worstGameAvgTickMs: perf.worstGameAvgTickMs, parallelWorstTickMs: perf.parallelWorstTickMs }));
   console.log(flags.length ? `  FLAGS:\n${flags.map((f) => `    - ${f.kind}: ${f.matchup ?? f.unit ?? ""} ${f.detail}`).join("\n")}` : "  no flags");
 }
 console.log(JSON.stringify({ report: out, flags: flags.length }));
