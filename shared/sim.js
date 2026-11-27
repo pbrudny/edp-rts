@@ -833,14 +833,22 @@ function runAI(s, p) {
     return;
   }
   // attack waves
-  const need = Math.min(D.wave + ai.wave * 2, 18); // waves grow, but not forever
-  if (army.filter((a) => !a.order || a.order.type === "move").length >= need) { // a new wave once enough soldiers wait at home
+  const need = Math.min(D.wave + ai.wave * 2, 18, s.time >= 15 * 60 ? D.wave + 4 : Infinity); // waves grow, but not forever; smaller late in the game
+  const soldiers = army.filter((a) => !KINDS[a.kind].siege);
+  const waiting = soldiers.filter((a) => !a.order || a.order.type === "move").length;
+  if (soldiers.length > (ai.most ?? 0)) { ai.most = soldiers.length; ai.grew = s.time; } // late game: an army that stopped growing goes anyway
+  const stalled = s.time >= 15 * 60 && s.time - (ai.grew ?? 0) >= 60;
+  // a new wave once enough soldiers wait at home, or (at most every 30 s) when the army is big enough, the pop cap is reached or the army stalled
+  const ready = s.time - (ai.lastWave ?? -Infinity) >= 30 && soldiers.length >= D.wave && (soldiers.length >= need || pop >= cap || stalled);
+  if (waiting >= need || ready) {
     const foes = [...s.ents.values()].filter((e) => enemies(s, p.id, e.owner) && s.players[e.owner].alive && isBuilding(e));
     if (foes.length) {
       foes.sort((a, b) => Math.hypot(a.x - bx, a.y - by) - Math.hypot(b.x - bx, b.y - by));
       const t = foes[0];
-      command(s, p.id, { t: "attackMove", ids: army.map((a) => a.id), x: t.x + t.w / 2, y: t.y + t.h / 2 });
-      ai.wave++;
+      command(s, p.id, { t: "attackMove", ids: army.map((a) => a.id), x: t.x + t.w / 2, y: t.y + t.h / 2 }); // every soldier and the rams
+      // ai.most = 0: the stalled check measures growth of the next wave from scratch; without the reset the remembered pre-wave
+      // peak (soldiers that just left and died) would mark the rebuilding army as stalled and launch it again after 60 s
+      ai.wave++; ai.lastWave = s.time; ai.most = 0;
       s.events.push({ type: "attack_launched", player: p.name, units: army.length });
     }
   } else {
