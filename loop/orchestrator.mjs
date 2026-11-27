@@ -173,10 +173,15 @@ const taskTextOf = (t) => `Task ${t.id}: ${t.title}\nType: ${t.type}\n\nSpec:\n$
   (t.report ? `\nPlaytest report it is based on: ${t.report}` : "") + (t.files_hint?.length ? `\nLikely files: ${t.files_hint.join(", ")}` : "");
 const hasChanges = (dir) => !!sh("git", ["status", "--porcelain", "--", ".", ":!reports", ":!node_modules"], dir).out;
 
+const words = (t) => new Set(t.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 3));
+const overlap = (a, b) => { const A = words(a), B = words(b); return [...A].filter((w) => B.has(w)).length / Math.max(1, Math.min(A.size, B.size)); };
+const openTasks = (ts = load()) => ts.filter((t) => !["merged", "rejected"].includes(t.status));
 function addFollowUps(parent, items = []) {
   if (!items.length) return [];
   const all = load(), ids = [];
   for (const f of items) {
+    const dup = openTasks(all).find((t) => t.id !== parent.id && overlap(t.title + " " + t.spec, f.title + " " + f.spec) >= 0.6);
+    if (dup) { console.log(`  = follow-up "${f.title}" skipped: looks like ${dup.id}`); log("follow-up-duplicate", { parent: parent.id, title: f.title, dup: dup.id }); continue; }
     const task = { id: nextId(all), title: f.title, type: f.type, spec: f.spec, acceptance: f.acceptance, evidence: f.evidence,
       priority: parent.priority, needs_approval: f.type === "feature", status: f.type === "feature" ? "awaiting-approval" : "todo",
       parent: parent.id, createdAt: new Date().toISOString() };
@@ -213,7 +218,8 @@ function work(t) {
   update(t.id, { status: "in-progress", branch });
   log("task-start", { id: t.id, title: t.title, branch });
   const role = t.type === "balance" ? "balancer" : "builder";
-  const taskText = taskTextOf(t);
+  const others = openTasks().filter((x) => x.id !== t.id);
+  const taskText = taskTextOf(t) + (others.length ? `\n\nOther open backlog tasks (don't propose follow-ups that duplicate these, and don't do their work here):\n${others.map((x) => `- ${x.id} [${x.type}] ${x.title}`).join("\n")}` : "");
   let feedback = t.reviewNotes ? `A previous attempt was rejected by review:\n${t.reviewNotes}` : "";
 
   for (let review = 1; review <= MAX_REVIEW_ROUNDS; review++) {
