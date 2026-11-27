@@ -8,9 +8,15 @@ browser --commands (WebSocket)--> server: room --> shared/sim.js (authoritative,
                                                      \--domain events (batched REST)--> broker topic demo.rts --> event monitor
 ```
 - `shared/sim.js`: the whole game rules (map generation, A* path finding, gathering, building, combat, AI). Imported by the server and by the client (constants, placement checks).
-- `server.js`: HTTP + WebSocket (`ws`), rooms, command validation (players can only command their own entities), broker publisher.
+- `server.js`: HTTP + WebSocket (`ws`), GitHub login, rooms, command validation (players can only command their own entities), broker publisher.
 - `public/`: Canvas renderer, input, HUD, menus.
 - Events: `game_started`, `building_placed`, `building_completed`, `unit_trained`, `tech_researched`, `unit_killed`, `building_destroyed`, `attack_launched`, `player_defeated`, `game_over`.
+
+## Login
+- Playing (and watching, spectating, replays: everything over the WebSocket) needs a GitHub sign-in when `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are set. Without them (local dev, tests) login is off.
+- `/auth/login?next=/…` → GitHub OAuth (no scopes) → `/auth/callback` sets `er_auth`, an HMAC-signed cookie (`SESSION_SECRET`, 30 days) with the GitHub login. No session store. `/auth/logout` clears it, `/api/me` tells the client whether login is required and who is signed in.
+- The WebSocket closes with code `4401` without a valid cookie; the client then sends the player to sign in and back to the same URL (invite links and replay links survive). Signed-in players' names are their GitHub login (set by the server, not the client).
+- Callback URL is built from `PUBLIC_URL` (else the request host).
 
 ## Graphics
 - Renderer: PixiJS 7.4.2 (WebGL, self-hosted in `public/vendor`), isometric 2:1 view. Ground = top-down noise texture (`public/art.js`) re-projected with a matrix; fog of war = 80x80 alpha canvas projected the same way (soft edges for free).
@@ -29,5 +35,5 @@ browser --commands (WebSocket)--> server: room --> shared/sim.js (authoritative,
 - `node loop/gates.mjs` runs all automatic checks at once.
 
 ## Deploy
-- `/root/edp-rts` on steve107, `docker compose up -d --build` (clean env; `.env` has `EDP_BROKER_DEMO_PASSWORD`).
+- `/root/edp-rts` on steve107, `docker compose up -d --build` (clean env; `.env` has `EDP_BROKER_DEMO_PASSWORD`, `RTS_GITHUB_CLIENT_ID`, `RTS_GITHUB_CLIENT_SECRET`, `RTS_SESSION_SECRET`).
 - Without `BROKER_URL` the server runs fine and simply doesn't publish events.

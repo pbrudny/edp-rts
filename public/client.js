@@ -95,6 +95,7 @@ function connect(first) {
   const beat = setInterval(() => ws.readyState === 1 && ws.send('{"t":"ping"}'), 25000); // keep idle lobby alive behind the proxy
   ws.onclose = (ev) => {
     clearInterval(beat);
+    if (ev.code === 4401) return signIn(); // GitHub login required (or the login expired)
     if (ev.code === 4000) { playing = false; return toast("This game is now open in another tab."); }
     if (playing && !snap?.over && me >= 0 && session()) { // try to take our slot back for up to 60 s
       if (!reconnectUntil) { reconnectUntil = Date.now() + 60000; toast("Connection lost. Reconnecting…"); }
@@ -119,10 +120,18 @@ let ready = false;
 const send = (m) => ws?.readyState === 1 && ws.send(JSON.stringify(m));
 const cmd = (c) => send({ t: "cmd", c });
 
+// ------------------------------------------------------------------ GitHub login (the server requires it when configured)
+const signIn = () => (location.href = "/auth/login?next=" + encodeURIComponent(location.pathname + location.search));
+$("loginBtn").onclick = (e) => { e.preventDefault(); signIn(); };
+fetch("/api/me").then((r) => r.json()).then(({ loginRequired, user }) => {
+  if (user) { $("name").value = user.login; $("name").readOnly = true; $("name").title = "Your GitHub login"; $("who").hidden = false; }
+  else if (loginRequired) { $("menuCard").classList.add("locked"); $("loginBox").hidden = false; $("loginErr").hidden = new URLSearchParams(location.search).get("login") !== "failed"; }
+}).catch(() => {});
+
 // ------------------------------------------------------------------ menu / lobby
 const nameVal = () => $("name").value.trim() || "Commander";
 try { $("name").value = localStorage.getItem("er-name") ?? ""; } catch {}
-const saveName = () => { try { localStorage.setItem("er-name", $("name").value.trim()); } catch {} };
+const saveName = () => { if ($("name").readOnly) return; try { localStorage.setItem("er-name", $("name").value.trim()); } catch {} };
 // map choice: the select in the menu is used for single player, AI battles and new lobbies
 $("mapSel").innerHTML = $("lobbyMap").innerHTML = Object.entries(MAPS).map(([k, v]) => `<option value="${k}">${v}</option>`).join("");
 try { $("mapSel").value = localStorage.getItem("er-map") || "lakes"; } catch {}

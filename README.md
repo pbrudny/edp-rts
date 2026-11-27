@@ -1,6 +1,6 @@
 # Ember Realms
 
-**A real-time strategy game you play in the browser.** Build a village, raise an army, and burn every enemy building to the ground. No install, no account.
+**A real-time strategy game you play in the browser.** Build a village, raise an army, and burn every enemy building to the ground. No install: sign in with GitHub and play.
 
 **[▶ Play now at rts.atabuilderslab.pl](https://rts.atabuilderslab.pl)** · [Game guide](docs/GAME-GUIDE.md) · [How it works](docs/ARCHITECTURE.md) · [AI dev loop](loop/README.md)
 
@@ -75,7 +75,7 @@ npm install
 npm start
 ```
 
-Then open http://localhost:3000. Events are only sent to a broker when `BROKER_URL` is set, so the game runs fine without one.
+Then open http://localhost:3000. Locally there is no login: GitHub sign-in is only required when `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` are set. Events are only sent to a broker when `BROKER_URL` is set, so the game runs fine without one.
 
 Check that everything works:
 

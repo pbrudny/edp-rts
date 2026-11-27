@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { readFile, writeFile, readdir, unlink } from "node:fs/promises";
 import { readFileSync, mkdirSync } from "node:fs";
 import { extname } from "node:path";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID, createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
 import { createGame, step, command, snapshot, mapInfo, gameStats, TICK, MAPS } from "./shared/sim.js";
 
@@ -157,11 +157,61 @@ function teamOf(room, i) { return room.sim ? (room.sim.peaceful ? 0 : room.sim.p
 function sendTeam(room, from, msg) { const m = JSON.stringify(msg), t = teamOf(room, from); room.slots.forEach((s, i) => { if (s.ws?.readyState === 1 && teamOf(room, i) === t) s.ws.send(m); }); }
 function closeRoom(room) { clearInterval(room.timer); rooms.delete(room.code); if (room.sim && !room.sim.over) saveReplay(room); }
 
+// ------------------------------------------------------------------ GitHub login (required to play when GITHUB_CLIENT_ID is set)
+// Signed cookie, no session store: er_auth = base64url({login,id,exp}).hmac. Without GITHUB_CLIENT_ID (local dev, tests) login is off.
+const GH_ID = process.env.GITHUB_CLIENT_ID, GH_SECRET = process.env.GITHUB_CLIENT_SECRET;
+const LOGIN_ON = !!(GH_ID && GH_SECRET);
+const SESSION_SECRET = process.env.SESSION_SECRET || randomBytes(32).toString("hex"); // random: sessions end on restart
+if (LOGIN_ON && !process.env.SESSION_SECRET) console.warn("SESSION_SECRET not set: players must sign in again after every restart");
+const SESSION_DAYS = 30;
+const sign = (v) => createHmac("sha256", SESSION_SECRET).update(v).digest("base64url");
+const cookies = (req) => Object.fromEntries((req.headers.cookie ?? "").split(";").map((c) => c.trim().split("=")).filter((c) => c.length >= 2).map(([k, ...v]) => [k, decodeURIComponent(v.join("="))]));
+function sealed(name, req) { // value of a signed cookie, or null
+  const raw = cookies(req)[name]; if (!raw) return null;
+  const [body, mac] = raw.split("."); if (!body || !mac) return null;
+  const a = Buffer.from(mac), b = Buffer.from(sign(body));
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  try { const v = JSON.parse(Buffer.from(body, "base64url").toString()); return v.exp > Date.now() ? v : null; } catch { return null; }
+}
+const seal = (v) => { const body = Buffer.from(JSON.stringify(v)).toString("base64url"); return body + "." + sign(body); };
+const isHttps = (req) => (req.headers["x-forwarded-proto"] ?? "").split(",")[0].trim() === "https";
+const cookie = (req, name, value, maxAge) => `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${isHttps(req) ? "; Secure" : ""}`;
+const origin = (req) => process.env.PUBLIC_URL?.replace(/\/$/, "") ?? `${isHttps(req) ? "https" : "http"}://${req.headers.host}`;
+const safeNext = (n) => (typeof n === "string" && n.startsWith("/") && !n.startsWith("//") && !n.includes("\\") ? n : "/");
+const userOf = (req) => (LOGIN_ON ? sealed("er_auth", req) : null);
+
+async function authRoute(req, res, url) {
+  const redirect = (to, setCookie) => res.writeHead(302, { Location: to, "Cache-Control": "no-store", ...(setCookie ? { "Set-Cookie": setCookie } : {}) }).end();
+  if (url.pathname === "/api/me") {
+    const u = userOf(req);
+    return res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify({ loginRequired: LOGIN_ON, user: u ? { login: u.login } : null }));
+  }
+  if (url.pathname === "/auth/logout") return redirect("/", [cookie(req, "er_auth", "", 0)]);
+  if (!LOGIN_ON) return redirect("/");
+  if (url.pathname === "/auth/login") {
+    const state = randomBytes(16).toString("hex");
+    const q = new URLSearchParams({ client_id: GH_ID, redirect_uri: origin(req) + "/auth/callback", state, scope: "", allow_signup: "true" });
+    return redirect(`https://github.com/login/oauth/authorize?${q}`, cookie(req, "er_oauth", seal({ state, next: safeNext(url.searchParams.get("next")), exp: Date.now() + 10 * 60e3 }), 600));
+  }
+  // /auth/callback
+  const st = sealed("er_oauth", req), clear = cookie(req, "er_oauth", "", 0);
+  if (!st || !url.searchParams.get("code") || url.searchParams.get("state") !== st.state) return redirect("/?login=failed", clear);
+  try {
+    const tok = await (await fetch("https://github.com/login/oauth/access_token", { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: GH_ID, client_secret: GH_SECRET, code: url.searchParams.get("code"), redirect_uri: origin(req) + "/auth/callback" }), signal: AbortSignal.timeout(10000) })).json();
+    if (!tok.access_token) throw new Error("no token");
+    const gh = await (await fetch("https://api.github.com/user", { headers: { Authorization: `Bearer ${tok.access_token}`, Accept: "application/vnd.github+json", "User-Agent": "ember-realms" }, signal: AbortSignal.timeout(10000) })).json();
+    if (!gh.login) throw new Error("no user");
+    return redirect(st.next, [clear, cookie(req, "er_auth", seal({ login: gh.login, id: gh.id, exp: Date.now() + SESSION_DAYS * 864e5 }), SESSION_DAYS * 86400)]);
+  } catch (e) { console.warn("github login failed:", e.message); return redirect("/?login=failed", clear); }
+}
+
 // ------------------------------------------------------------------ http + ws
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json" };
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   if (url.pathname === "/health") return res.end("ok");
+  if (url.pathname === "/api/me" || url.pathname.startsWith("/auth/")) return authRoute(req, res, url);
   if (url.pathname === "/api/lobbies") return res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" }).end(JSON.stringify(lobbies()));
   if (url.pathname === "/api/replays") return res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-cache" }).end(JSON.stringify(replays.slice(0, 50)));
   let path = url.pathname === "/" ? "/public/index.html" : url.pathname;
@@ -182,7 +232,10 @@ const server = createServer(async (req, res) => {
 const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
 // heartbeat: proxies (Traefik/Cloudflare) close silent WebSockets after ~100 s, which killed idle lobbies
 setInterval(() => { for (const c of wss.clients) { if (c.alive === false) { c.terminate(); continue; } c.alive = false; c.ping(); } }, 25000);
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  const user = userOf(req);
+  if (LOGIN_ON && !user) return ws.close(4401, "login required"); // every way to play or watch goes through this socket
+  const nameOf = (n) => clean(user ? user.login : n); // signed in: your name is your GitHub login
   let room = null, pid = -1, last = 0, burst = 0, lastChat = 0, chatN = 0, lastMark = 0;
   ws.alive = true; ws.on("pong", () => (ws.alive = true));
   const reply = (m) => ws.readyState === 1 && ws.send(JSON.stringify(m));
@@ -241,7 +294,7 @@ wss.on("connection", (ws) => {
         if (!r?.sim || r.sim.over || r.replay) return reply({ t: "error", msg: r && !r.sim ? "That game hasn't started yet. Join it instead." : "No running game with that code." });
         r.watchers ??= []; r.watchers = r.watchers.filter((w) => w.readyState === 1);
         if (r.watchers.length >= MAX_WATCHERS) return reply({ t: "error", msg: "That game already has the most spectators." });
-        ws.specName = clean(m.name); room = r; r.watchers.push(ws);
+        ws.specName = nameOf(m.name); room = r; r.watchers.push(ws);
         ws.send(r.map); ws.send(JSON.stringify({ t: "start", me: -1, live: true })); ws.send(JSON.stringify(snapshot(r.sim, -1))); // a picture right away, even while the game is paused
         notice(r, `${ws.specName} is watching.`);
         break;
@@ -260,7 +313,7 @@ wss.on("connection", (ws) => {
         if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
         const diff = ["easy", "normal", "hard"].includes(m.diff) ? m.diff : "normal";
         const n = Math.min(3, Math.max(1, Number(m.ais) || 1));
-        room = { code: code(), slots: [{ name: clean(m.name), ws }], inbox: [], peaceful: !!m.peaceful, mapType: mapOf(m.map) };
+        room = { code: code(), slots: [{ name: nameOf(m.name), ws }], inbox: [], peaceful: !!m.peaceful, mapType: mapOf(m.map) };
         for (let i = 0; i < n; i++) room.slots.push({ name: AI_NAMES[i] + (room.peaceful ? "" : " AI"), ai: diff });
         // "ally": you and the first computer player against the rest
         room.slots.forEach((x, i) => (x.team = m.teams === "ally" && n >= 2 ? (i < 2 ? 0 : 1) : i));
@@ -269,7 +322,7 @@ wss.on("connection", (ws) => {
       }
       case "create":
         if (rooms.size >= MAX_ROOMS) return reply({ t: "error", msg: "Server is full, try again later." });
-        room = { code: code(), slots: [{ name: clean(m.name), ws, team: 0 }], inbox: [], host: ws, public: !!m.public, mapType: mapOf(m.map), created: Date.now() }; rooms.set(room.code, room); pid = 0;
+        room = { code: code(), slots: [{ name: nameOf(m.name), ws, team: 0 }], inbox: [], host: ws, public: !!m.public, mapType: mapOf(m.map), created: Date.now() }; rooms.set(room.code, room); pid = 0;
         seat(room, room.slots[0]); sendLobby(room);
         break;
       case "join": {
@@ -277,7 +330,7 @@ wss.on("connection", (ws) => {
         if (!r) return reply({ t: "error", msg: "No game with that code." });
         if (r.sim) return reply({ t: "error", msg: "That game has already started. Press Watch to spectate it.", started: true });
         if (r.slots.length >= 4) return reply({ t: "error", msg: "That game is full." });
-        room = r; pid = r.slots.length; r.slots.push({ name: clean(m.name), ws, team: freeTeam(r) });
+        room = r; pid = r.slots.length; r.slots.push({ name: nameOf(m.name), ws, team: freeTeam(r) });
         seat(r, r.slots[pid]); sendLobby(r);
         break;
       }
@@ -326,4 +379,4 @@ wss.on("connection", (ws) => {
 });
 
 await loadReplays();
-server.listen(PORT, () => console.log(`Ember Realms on :${PORT}, events -> ${BROKER ? TOPIC : "(broker off)"}`));
+server.listen(PORT, () => console.log(`Ember Realms on :${PORT}, events -> ${BROKER ? TOPIC : "(broker off)"}, GitHub login ${LOGIN_ON ? "required" : "off"}`));

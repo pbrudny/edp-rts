@@ -49,6 +49,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .card h2 { font: 700 18px var(--display); margin: 0; }
 .card p { margin: 0; color: var(--muted); }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+#menuCard.locked > :not(.keep) { display: none; }
+a.btn { font: 700 13px var(--body); color: var(--ink); background: #3a2d1f; border: 1.5px solid var(--edge); border-radius: 6px; padding: 6px 10px; text-decoration: none; }
+a.btn.big { background: #6b4a1c; border-color: var(--gold); }
+a.btn:hover { background: #4d3b28; border-color: var(--gold); }
 input, select { font: 14px var(--body); background: #241b13; color: var(--ink); border: 1.5px solid var(--edge); border-radius: 6px; padding: 7px 10px; }
 .slot { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--edge); border-radius: 8px; }
 .slot b { width: 12px; height: 12px; border-radius: 50%; }
@@ -112,10 +116,15 @@ table.stats thead th { color: var(--muted); font-weight: 700; }
 <div class="hud" id="groups" hidden></div>
 
 <div class="overlay" id="menu">
-  <div class="card">
-    <h1>Ember Realms</h1>
-    <p style="text-align:center">Gather food, wood and gold. Grow your village, raise an army, and burn every enemy building to the ground.</p>
-    <div class="row"><label for="name">Your name</label><input id="name" maxlength="16" placeholder="Commander"></div>
+  <div class="card" id="menuCard">
+    <h1 class="keep">Ember Realms</h1>
+    <p class="keep" style="text-align:center">Gather food, wood and gold. Grow your village, raise an army, and burn every enemy building to the ground.</p>
+    <div class="keep" id="loginBox" hidden>
+      <p style="text-align:center;margin-bottom:10px">Sign in with your GitHub account to play.</p>
+      <p id="loginErr" hidden style="text-align:center;color:#e07a5f;margin-bottom:10px">GitHub sign-in didn't work. Please try again.</p>
+      <div class="row" style="justify-content:center"><a class="btn big" id="loginBtn" href="/auth/login">Sign in with GitHub</a></div>
+    </div>
+    <div class="row"><label for="name">Your name</label><input id="name" maxlength="16" placeholder="Commander"><small id="who" hidden style="color:var(--muted)">Signed in with GitHub · <a href="/auth/logout" style="color:var(--gold)">Sign out</a></small></div>
     <h2>Single player</h2>
     <div class="row">
       <select id="mode" aria-label="Game mode"><option value="conquest" selected>Conquest</option><option value="peaceful">Peaceful</option></select>

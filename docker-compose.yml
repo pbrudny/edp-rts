@@ -9,6 +9,11 @@ services:
       BROKER_USER: demo
       BROKER_PASSWORD: ${EDP_BROKER_DEMO_PASSWORD}
       TOPIC: demo.rts
+      # GitHub login (required to play when set): OAuth app callback https://rts.atabuilderslab.pl/auth/callback
+      GITHUB_CLIENT_ID: ${RTS_GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${RTS_GITHUB_CLIENT_SECRET}
+      SESSION_SECRET: ${RTS_SESSION_SECRET}
+      PUBLIC_URL: https://rts.atabuilderslab.pl
     volumes: [rts-data:/data]
     networks: [coolify]
     labels:
