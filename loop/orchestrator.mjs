@@ -74,8 +74,18 @@ const TOOLS = {
 };
 
 let spentUsd = 0;
-function agent(name, prompt, cwd) {
-  const t0 = Date.now();
+// Minimal schema check: required keys present, enum values valid, arrays are arrays (enough to catch an agent inventing its own format).
+function schemaErrors(schema, v, path = "") {
+  if (schema.enum) return schema.enum.includes(v) ? [] : [`${path || "value"} must be one of ${schema.enum.join("|")}`];
+  if (schema.type === "array") return Array.isArray(v) ? (schema.items ? v.flatMap((x, i) => schemaErrors(schema.items, x, `${path}[${i}]`)) : []) : [`${path} must be an array`];
+  if (schema.type === "object") {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return [`${path || "answer"} must be an object`];
+    return [...(schema.required ?? []).filter((k) => !(k in v)).map((k) => `missing key ${path ? path + "." : ""}${k}`),
+      ...Object.entries(schema.properties ?? {}).filter(([k]) => k in v && v[k] !== null).flatMap(([k, sub]) => schemaErrors(sub, v[k], path ? `${path}.${k}` : k))];
+  }
+  return [];
+}
+function callClaude(name, prompt, cwd) {
   const r = sh("claude", ["-p", prompt, "--agent", name, "--output-format", "json", "--strict-mcp-config", "--json-schema", JSON.stringify(SCHEMAS[name]),
     "--permission-mode", name === "builder" || name === "balancer" ? "acceptEdits" : "default", "--allowedTools", ...TOOLS[name]],
     cwd, { timeout: 60 * 60_000, env: { ...process.env, CLAUDE_LOOP_AGENT: name } });
@@ -86,7 +96,21 @@ function agent(name, prompt, cwd) {
   spentUsd += res.total_cost_usd ?? 0;
   let data = res.structured_output;
   if (!data) { const m = String(res.result ?? "").match(/\{[\s\S]*\}/); if (m) try { data = JSON.parse(m[0]); } catch {} }
-  if (!data) throw new Error(`${name}: no structured output: ${String(res.result).slice(-800)}`);
+  return { data, res };
+}
+function agent(name, prompt, cwd) {
+  const t0 = Date.now();
+  const full = `${prompt}\n\n---\nEnd your answer with one JSON object (no code fence) matching this JSON Schema exactly, using these key names:\n${JSON.stringify(SCHEMAS[name])}`;
+  let { data, res } = callClaude(name, full, cwd), errs = data ? schemaErrors(SCHEMAS[name], data) : ["no JSON found"];
+  if (errs.length) { // one retry, resuming the same session so the agent doesn't redo the work
+    log("agent-format-retry", { name, errors: errs.join("; ") });
+    const retry = sh("claude", ["-p", `Your final JSON did not match the schema: ${errs.join("; ")}. Reply with only the corrected JSON object for the same work, matching:\n${JSON.stringify(SCHEMAS[name])}`,
+      "--resume", res.session_id, "--output-format", "json", "--strict-mcp-config", "--allowedTools", "Read"], cwd, { timeout: 10 * 60_000 });
+    try { let rr = JSON.parse(retry.out); if (Array.isArray(rr)) rr = rr.findLast((m) => m.type === "result") ?? {}; spentUsd += rr.total_cost_usd ?? 0;
+      const m = String(rr.result ?? "").match(/\{[\s\S]*\}/); data = m ? JSON.parse(m[0]) : null; } catch { data = null; }
+    errs = data ? schemaErrors(SCHEMAS[name], data) : ["no JSON found"];
+    if (errs.length) throw new Error(`${name}: answer still does not match the schema: ${errs.join("; ")}`);
+  }
   log("agent", { name, seconds: Math.round((Date.now() - t0) / 1000), costUsd: res.total_cost_usd, output: data });
   return data;
 }
@@ -231,7 +255,7 @@ function reviewOnly(id) {
   log("gates", { id, ok: g.ok });
   if (!g.ok) { update(id, { status: "failed", lastGateLog: gateFeedback(g).slice(-4000) }); return console.log(gateFeedback(g)); }
   const r = reviewAndCommit(t, built, dir, t.type === "balance" ? "balancer" : "builder");
-  if (typeof r !== "string") { update(id, { status: "review-failed", reviewNotes: r.blocking.join("\n") }); console.log("Review blocked:\n" + r.blocking.map((b) => "- " + b).join("\n")); }
+  if (typeof r !== "string") { update(id, { status: "review-failed", reviewNotes: (r.blocking ?? []).join("\n") }); console.log("Review blocked:\n" + r.blocking.map((b) => "- " + b).join("\n")); }
 }
 
 function merge(id) {
@@ -254,7 +278,7 @@ function runLoop() {
   let done = 0, escalations = 0;
   while (done < max) {
     const ts = load();
-    const t = opt("task") ? ts.find((x) => x.id === opt("task")) : ts.filter((x) => x.status === "todo").sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))[0];
+    const t = opt("task") ? ts.find((x) => x.id === opt("task")) : ts.filter((x) => x.status === "todo" && (x.dependsOn ?? []).every((d) => ts.find((y) => y.id === d)?.status === "merged")).sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id))[0];
     if (!t) { console.log("Nothing to do (no todo tasks). Run `triage` or approve tasks."); break; }
     if (!["todo", "in-progress"].includes(t.status)) throw new Error(`${t.id} has status ${t.status}`);
     let result;
