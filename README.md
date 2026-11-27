@@ -86,6 +86,13 @@ surpluses and buys what it is short of.
 Workshop: Forging (+2 melee attack), Fletching (+1 attack/range for archers and town centres), Chain mail (+1 armour/arrow armour for soldiers).
 Storehouse: Double-bit axe (+20% wood), Gold mining (+20% gold). Town Centre: Wheelbarrow (carry 15, villagers 10% faster).
 
+## AI attack waves
+The AI keeps its soldiers near the base and sends a wave (every soldier plus its rams, attack-move to the nearest enemy building) once
+`need = min(wave size + 2 per earlier wave, 18)` soldiers wait at home (wave size: easy 10, normal 7, hard 6). After 15 game minutes
+`need` is capped at wave size + 4. It also launches (at most every 30 s, with at least the base wave size) when its soldiers number
+`need` even if some still have orders, when it is at the pop cap, or, after 15 minutes, when the army has not grown for 60 s.
+An enemy within 14 tiles of its base comes first: then all soldiers defend instead.
+
 ## Replays and stats
 The simulation is deterministic (seeded RNG, AI included), so a replay is just the seed plus every player command with its tick.
 Games with at least one human and 1+ minute are saved to `$DATA_DIR/replays/<id>.json` (Docker volume `rts-data`, newest 200 kept),
